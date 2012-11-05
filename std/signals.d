@@ -231,8 +231,8 @@ L1:
             {   slots_idx--;
                 slots[i] = slots[slots_idx];
                 objs[i] = objs[slots_idx];
-                slots[slots_idx].direct = null;        // not strictly necessary
                 objs[slots_idx] = null;        // not strictly necessary
+                slots.length=slots.length-1;
 				if(obj)  {
 					rt_detachDisposeEvent(obj, &unhook);
 					debug (signal) writefln("Detached unhook to %s", obj);
@@ -284,7 +284,7 @@ L1:
             {   slots_idx--;
                 slots[i] = slots[slots_idx];
 				objs[i] = objs[slots_idx];
-                slots[slots_idx].indirect = null;        // not strictly necessary
+				slots.length=slots.length-1;
                 objs[slots_idx] = null;        // not strictly necessary
             }
             else
@@ -315,7 +315,9 @@ L1:
             slots = null;
         }
     }
-
+	invariant() {
+		assert(slots_idx==slots.length); // I probably even remove slots_idx all together.
+	}
   private:
 	union DelegateTypes 
 	{
