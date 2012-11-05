@@ -183,7 +183,7 @@ struct Signal(T1...)
                 auto p = std.c.stdlib.calloc(Object.sizeof, len);
                 if (!p)
                     core.exception.onOutOfMemoryError();
-                objs = cast(Object[])p[0 .. len*Object.sizeof];
+                objs = (cast(Object*)p)[0 .. len];
             }
             else
             {
@@ -191,7 +191,7 @@ struct Signal(T1...)
                 auto p = std.c.stdlib.realloc(objs.ptr, Object.sizeof * len);
                 if (!p)
                     core.exception.onOutOfMemoryError();
-                objs = cast(Object[])p[0 .. len*Object.sizeof];
+                objs = (cast(Object*)p)[0 .. len];
                 objs[slots_idx + 1 .. $] = null;
             }
         }
