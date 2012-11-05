@@ -143,21 +143,6 @@ struct Signal(T1...)
 {
     static import std.c.stdlib;
     static import core.exception;
-    /***
-     * A slot is implemented as a delegate.
-     * The slot_t is the type of the delegate.
-     * The delegate must be to an instance of a class or an interface
-     * to a class instance.
-     * Delegates to struct instances or nested functions must not be
-     * used as slots.
-     */
-    //alias void delegate(T1) slot_t;
-	private alias void delegate(void*, T1) islot_t;
-	union DelegateTypes 
-	{
-		void delegate(void*, T1) indirect;
-		void delegate(T1) direct;
-	}
 
     /***
      * Call each of the connected slots, passing the argument(s) i to them.
@@ -213,9 +198,8 @@ struct Signal(T1...)
         objs[slots_idx++] = obj;
         slots ~= dg;
 
-     L1:
+L1:
 		if(obj) {
-			debug (signal) writefln("Attached unhook to %s", obj);
 			rt_attachDisposeEvent(obj, &unhook);
 		}
 		debug (signal) writefln("Signal.addSlot(slot) done");
@@ -284,7 +268,7 @@ struct Signal(T1...)
      */
     final void unhook(Object o)
     {
-        debug (signal) writefln("Signal.unhook(o = %s)", cast(void*)o);
+        debug (signal) stderr.writefln("Signal.unhook(o = %s)", cast(void*)o);
         for (size_t i = 0; i < slots_idx; )
         {
             if (objs[i] is o)
@@ -324,6 +308,11 @@ struct Signal(T1...)
     }
 
   private:
+	union DelegateTypes 
+	{
+		void delegate(void*, T1) indirect;
+		void delegate(T1) direct;
+	}
     DelegateTypes[] slots;             // the slots to call from emit()
 	Object[] objs;
     size_t slots_idx;           // used length of slots[]
