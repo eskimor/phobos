@@ -139,7 +139,7 @@ void main()
  *
  */
 
-struct Signal(T1...)
+mixin template Signal(T1...)
 {
     static import std.c.stdlib;
     static import core.exception;
@@ -354,14 +354,12 @@ unittest
         {
             if (v != _value)
             {   _value = v;
-                extendedSig.emit("setting new value", v);
-				//simpleSig.emit(v);
+                emit("setting new value", v);
             }
             return v;
         }
 
-        Signal!(string, int) extendedSig;
-		//Signal!(int) simpleSig;
+        mixin Signal!(string, int);
 
       private:
         int _value;
@@ -380,19 +378,19 @@ unittest
     assert(o.captured_msg == "");
 
     // connect the watcher and trigger it
-    a.extendedSig.connect!"watch"(o);
+    a.connect!"watch"(o);
     a.value = 4;
     assert(o.captured_value == 4);
     assert(o.captured_msg == "setting new value");
 
     // disconnect the watcher and make sure it doesn't trigger
-    a.extendedSig.disconnect!"watch"(o);
+    a.disconnect!"watch"(o);
     a.value = 5;
     assert(o.captured_value == 4);
     assert(o.captured_msg == "setting new value");
 
     // reconnect the watcher and make sure it triggers
-    a.extendedSig.connect!"watch"(o);
+    a.connect!"watch"(o);
     a.value = 6;
     assert(o.captured_value == 6);
     assert(o.captured_msg == "setting new value");
@@ -429,9 +427,9 @@ unittest {
         @property void value2(int v)  { s2.emit("str2", v); }
         @property void value3(long v) { s3.emit("str3", v); }
 
-        Signal!(string, int)  s1;
-        Signal!(string, int)  s2;
-        Signal!(string, long) s3;
+        mixin Signal!(string, int)  s1;
+        mixin Signal!(string, int)  s2;
+        mixin Signal!(string, long) s3;
     }
 
     void test(T)(T a) {
@@ -507,9 +505,9 @@ unittest {
         @property void value5(int v)  { s5.emit("str5", v); }
         @property void value6(long v) { s6.emit("str6", v); }
 
-        Signal!(string, int)  s4;
-        Signal!(string, int)  s5;
-        Signal!(string, long) s6;
+        mixin Signal!(string, int)  s4;
+        mixin Signal!(string, int)  s5;
+        mixin Signal!(string, long) s6;
     }
     
     auto a = new BarDerived;
