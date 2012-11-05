@@ -261,6 +261,15 @@ L1:
 		removeSlot(obj, t);
 	}
 
+	/// Easy disconnect a whole object.
+	final void disconnect(T2)(T2 obj) if(is(T2 : Object)) {
+		assert(obj);
+		auto old_idx=slots_idx;
+		unhook(obj);
+		if(old_idx!=slots_idx) 
+			rt_detachDisposeEvent(obj, &unhook);
+	}
+
     /* **
      * Special function called when o is destroyed.
      * It causes any slots dependent on o to be removed from the list
@@ -390,7 +399,12 @@ unittest
     a.value = 5;
     assert(o.captured_value == 4);
     assert(o.captured_msg == "setting new value");
-
+	//a.extendedSig.connect!Observer(o, (o, msg, i) { o.watch("Hahah", i); });
+	a.extendedSig.connect!Observer(o, (o, msg, i) => o.watch("Hahah", i) );
+	a.value=7;	
+	assert(o.captured_value == 7);
+	assert(o.captured_msg == "Hahah");
+	a.extendedSig.disconnect(o); // Simply disconnect o, otherwise we would have to store the lamda somewhere if we want to disconnect later on.
     // reconnect the watcher and make sure it triggers
     a.extendedSig.connect!"watch"(o);
     a.value = 6;
