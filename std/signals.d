@@ -139,7 +139,7 @@ void main()
  *
  */
 
-mixin template Signal(T1...)
+struct Signal(T1...)
 {
     static import std.c.stdlib;
     static import core.exception;
@@ -151,24 +151,36 @@ mixin template Signal(T1...)
      * Delegates to struct instances or nested functions must not be
      * used as slots.
      */
-    alias void delegate(T1) slot_t;
+    //alias void delegate(T1) slot_t;
+	private alias void delegate(void*, T1) islot_t;
+	union DelegateTypes 
+	{
+		void delegate(void*, T1) indirect;
+		void delegate(T1) direct;
+	}
 
     /***
      * Call each of the connected slots, passing the argument(s) i to them.
      */
     final void emit( T1 i )
     {
-        foreach (slot; slots[0 .. slots_idx])
-        {   if (slot)
-                slot(i);
+        foreach (index, slot; slots[0 .. slots_idx])
+        {   
+			if(slot.indirect.ptr) // It is an indirect call
+			{ 
+				slot.indirect(cast(void*)(objs[index]), i);
+			}
+			else // Direct call:
+			{ 
+				auto dg=slot.direct;
+				dg.ptr=cast(void*)(objs[index]);
+				dg(i);
+			}
         }
     }
-
-    /***
-     * Add a slot to the list of slots to be called when emit() is called.
-     */
-    final void connect(slot_t slot)
+    private final void addSlot(T2)(T2 obj, DelegateTypes dg)
     {
+		assert(dg.indirect.funcptr);
         /* Do this:
          *    slots ~= slot;
          * but use malloc() and friends instead
@@ -176,51 +188,83 @@ mixin template Signal(T1...)
         auto len = slots.length;
         if (slots_idx == len)
         {
-            if (slots.length == 0)
+            if (objs.length == 0)
             {
                 len = 4;
-                auto p = std.c.stdlib.calloc(slot_t.sizeof, len);
+                auto p = std.c.stdlib.calloc(Object.sizeof, len);
                 if (!p)
                     core.exception.onOutOfMemoryError();
-                slots = (cast(slot_t*)p)[0 .. len];
+                objs = cast(Object[])p[0 .. len*Object.sizeof];
             }
             else
             {
                 len = len * 2 + 4;
-                auto p = std.c.stdlib.realloc(slots.ptr, slot_t.sizeof * len);
+                auto p = std.c.stdlib.realloc(objs.ptr, Object.sizeof * len);
                 if (!p)
                     core.exception.onOutOfMemoryError();
-                slots = (cast(slot_t*)p)[0 .. len];
-                slots[slots_idx + 1 .. $] = null;
+                objs = cast(Object[])p[0 .. len*Object.sizeof];
+                objs[slots_idx + 1 .. $] = null;
             }
         }
-        slots[slots_idx++] = slot;
+        objs[slots_idx++] = obj;
+        slots ~= dg;
 
      L1:
-        Object o = _d_toObject(slot.ptr);
-        rt_attachDisposeEvent(o, &unhook);
+		if(obj)
+			rt_attachDisposeEvent(obj, &unhook);
+    }
+	final void connect(string method, T2)(T2 obj) if(is(T2 : Object)) {
+		DelegateTypes t;
+		t.direct=mixin("&obj."~method);
+		t.direct.ptr=null; // Avoid a reference to the actual object.
+		addSlot(obj, t);
+	}
+    /***
+     * Add a slot to the list of slots to be called when emit() is called.
+     */
+    final void connect(T2)(T2 obj, void delegate(T2 obj, T1) dg)
+    {
+		DelegateTypes t;
+		t.indirect=cast(void delegate(void*, T1))(dg);
+		addSlot(obj, t);
     }
 
-    /***
-     * Remove a slot from the list of slots to be called when emit() is called.
-     */
-    final void disconnect(slot_t slot)
+    final void removeSlot(T2)(T2 obj, DelegateTypes dgs)
     {
         debug (signal) writefln("Signal.disconnect(slot)");
         for (size_t i = 0; i < slots_idx; )
         {
-            if (slots[i] == slot)
+            if (slots[i] == dgs && objs[i]==obj)
             {   slots_idx--;
                 slots[i] = slots[slots_idx];
-                slots[slots_idx] = null;        // not strictly necessary
-
-                Object o = _d_toObject(slot.ptr);
-                rt_detachDisposeEvent(o, &unhook);
+                objs[i] = objs[slots_idx];
+                slots[slots_idx].direct = null;        // not strictly necessary
+                objs[slots_idx] = null;        // not strictly necessary
+				if(obj) 
+					rt_detachDisposeEvent(obj, &unhook);
             }
             else
                 i++;
         }
     }
+    /***
+     * Remove a slot from the list of slots to be called when emit() is called.
+	 * Warning: Don't rely on the order slots being called is the same they have been registered, this will break as soon a slot is deregistered.
+     */
+    final void disconnect(T2)(T2 obj, void delegate(T2, T1) dg)
+    {
+		DelegateTypes t;
+		t.indirect=cast(void delegate(void*, T1)) (dg);
+		removeSlot(obj, dg);
+    }
+
+	final void disconnect(string method, T2)(T2 obj) if(is(T2 : Object))
+	{
+		DelegateTypes t;
+		t.direct=mixin("&obj."~method);
+		t.direct.ptr=null;
+		removeSlot(obj, t);
+	}
 
     /* **
      * Special function called when o is destroyed.
@@ -232,10 +276,12 @@ mixin template Signal(T1...)
         debug (signal) writefln("Signal.unhook(o = %s)", cast(void*)o);
         for (size_t i = 0; i < slots_idx; )
         {
-            if (_d_toObject(slots[i].ptr) is o)
+            if (objs[i] is o)
             {   slots_idx--;
                 slots[i] = slots[slots_idx];
-                slots[slots_idx] = null;        // not strictly necessary
+				objs[i] = objs[slots_idx];
+                slots[slots_idx].indirect = null;        // not strictly necessary
+                objs[slots_idx] = null;        // not strictly necessary
             }
             else
                 i++;
@@ -254,20 +300,21 @@ mixin template Signal(T1...)
          */
         if (slots)
         {
-            foreach (slot; slots[0 .. slots_idx])
+            foreach (o; objs[0 .. slots_idx])
             {
-                if (slot)
-                {   Object o = _d_toObject(slot.ptr);
+                if (o)
+                {   
                     rt_detachDisposeEvent(o, &unhook);
                 }
             }
-            std.c.stdlib.free(slots.ptr);
+            std.c.stdlib.free(objs.ptr);
             slots = null;
         }
     }
 
   private:
-    slot_t[] slots;             // the slots to call from emit()
+    DelegateTypes[] slots;             // the slots to call from emit()
+	Object[] objs;
     size_t slots_idx;           // used length of slots[]
 }
 
@@ -286,9 +333,18 @@ unittest
             captured_msg   = msg;
         }
 
+
         int    captured_value;
         string captured_msg;
     }
+
+	class SimpleObserver 
+	{
+		void watchOnlyInt(int i) {
+			captured_value=i;
+		}
+		int captured_value;
+	}
 
     class Foo
     {
@@ -298,12 +354,14 @@ unittest
         {
             if (v != _value)
             {   _value = v;
-                emit("setting new value", v);
+                extendedSig.emit("setting new value", v);
+				simpleSig.emit(v);
             }
             return v;
         }
 
-        mixin Signal!(string, int);
+        Signal!(string, int) extendedSig;
+		Signal!(int) simpleSig;
 
       private:
         int _value;
@@ -311,7 +369,7 @@ unittest
 
     Foo a = new Foo;
     Observer o = new Observer;
-
+	SimpleObserver so = new SimpleObserver;
     // check initial condition
     assert(o.captured_value == 0);
     assert(o.captured_msg == "");
@@ -322,19 +380,19 @@ unittest
     assert(o.captured_msg == "");
 
     // connect the watcher and trigger it
-    a.connect(&o.watch);
+    a.extendedSig.connect!"watch"(o);
     a.value = 4;
     assert(o.captured_value == 4);
     assert(o.captured_msg == "setting new value");
 
     // disconnect the watcher and make sure it doesn't trigger
-    a.disconnect(&o.watch);
+    a.extendedSig.disconnect!"watch"(o);
     a.value = 5;
     assert(o.captured_value == 4);
     assert(o.captured_msg == "setting new value");
 
     // reconnect the watcher and make sure it triggers
-    a.connect(&o.watch);
+    a.extendedSig.connect!"watch"(o);
     a.value = 6;
     assert(o.captured_value == 6);
     assert(o.captured_msg == "setting new value");
@@ -371,9 +429,9 @@ unittest {
         @property void value2(int v)  { s2.emit("str2", v); }
         @property void value3(long v) { s3.emit("str3", v); }
 
-        mixin Signal!(string, int)  s1;
-        mixin Signal!(string, int)  s2;
-        mixin Signal!(string, long) s3;
+        Signal!(string, int)  s1;
+        Signal!(string, int)  s2;
+        Signal!(string, long) s3;
     }
 
     void test(T)(T a) {
@@ -382,9 +440,9 @@ unittest {
         auto o3 = new Observer;
 
         // connect the watcher and trigger it
-        a.s1.connect(&o1.watchInt);
-        a.s2.connect(&o2.watchInt);
-        a.s3.connect(&o3.watchLong);
+        a.s1.connect!"watchInt"(o1);
+        a.s2.connect!"watchInt"(o2);
+        a.s3.connect!"watchLong"(o3);
 
         assert(!o1.i && !o1.l && !o1.str);
         assert(!o2.i && !o2.l && !o2.str);
@@ -409,9 +467,9 @@ unittest {
         o3.l = -13; o3.str = "x3";
 
         // disconnect the watchers and make sure it doesn't trigger
-        a.s1.disconnect(&o1.watchInt);
-        a.s2.disconnect(&o2.watchInt);
-        a.s3.disconnect(&o3.watchLong);
+        a.s1.disconnect!"watchInt"(o1);
+        a.s2.disconnect!"watchInt"(o2);
+        a.s3.disconnect!"watchLong"(o3);
 
         a.value1 = 21;
         a.value2 = 22;
@@ -421,9 +479,9 @@ unittest {
         assert(!o3.i && o3.l == -13 && o3.str == "x3");
 
         // reconnect the watcher and make sure it triggers
-        a.s1.connect(&o1.watchInt);
-        a.s2.connect(&o2.watchInt);
-        a.s3.connect(&o3.watchLong);
+        a.s1.connect!"watchInt"(o1);
+        a.s2.connect!"watchInt"(o2);
+        a.s3.connect!"watchLong"(o3);
 
         a.value1 = 31;
         a.value2 = 32;
@@ -449,9 +507,9 @@ unittest {
         @property void value5(int v)  { s5.emit("str5", v); }
         @property void value6(long v) { s6.emit("str6", v); }
 
-        mixin Signal!(string, int)  s4;
-        mixin Signal!(string, int)  s5;
-        mixin Signal!(string, long) s6;
+        Signal!(string, int)  s4;
+        Signal!(string, int)  s5;
+        Signal!(string, long) s6;
     }
     
     auto a = new BarDerived;
@@ -464,9 +522,9 @@ unittest {
     auto o6 = new Observer;
 
     // connect the watcher and trigger it
-    a.s4.connect(&o4.watchInt);
-    a.s5.connect(&o5.watchInt);
-    a.s6.connect(&o6.watchLong);
+    a.s4.connect!"watchInt"(o4);
+    a.s5.connect!"watchInt"(o5);
+    a.s6.connect!"watchLong"(o6);
 
     assert(!o4.i && !o4.l && !o4.str);
     assert(!o5.i && !o5.l && !o5.str);
@@ -491,9 +549,9 @@ unittest {
     o6.l = -46; o6.str = "x6";
 
     // disconnect the watchers and make sure it doesn't trigger
-    a.s4.disconnect(&o4.watchInt);
-    a.s5.disconnect(&o5.watchInt);
-    a.s6.disconnect(&o6.watchLong);
+    a.s4.disconnect!"watchInt"(o4);
+    a.s5.disconnect!"watchInt"(o5);
+    a.s6.disconnect!"watchLong"(o6);
 
     a.value4 = 54;
     a.value5 = 55;
@@ -503,9 +561,9 @@ unittest {
     assert(!o6.i && o6.l == -46 && o6.str == "x6");
 
     // reconnect the watcher and make sure it triggers
-    a.s4.connect(&o4.watchInt);
-    a.s5.connect(&o5.watchInt);
-    a.s6.connect(&o6.watchLong);
+    a.s4.connect!"watchInt"(o4);
+    a.s5.connect!"watchInt"(o5);
+    a.s6.connect!"watchLong"(o6);
 
     a.value4 = 64;
     a.value5 = 65;
