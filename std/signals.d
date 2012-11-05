@@ -164,14 +164,17 @@ struct Signal(T1...)
      */
     final void emit( T1 i )
     {
+        debug (signal) writefln("Signal.emit()");
         foreach (index, slot; slots[0 .. slots_idx])
         {   
 			if(slot.indirect.ptr) // It is an indirect call
 			{ 
+				debug (signal) writefln("Signal.emit() indirect");
 				slot.indirect(cast(void*)(objs[index]), i);
 			}
 			else // Direct call:
 			{ 
+				debug (signal) writefln("Signal.emit() direct, obj: %s", objs[index]);
 				auto dg=slot.direct;
 				dg.ptr=cast(void*)(objs[index]);
 				dg(i);
@@ -180,6 +183,7 @@ struct Signal(T1...)
     }
     private final void addSlot(T2)(T2 obj, DelegateTypes dg)
     {
+        debug (signal) writefln("Signal.addSlot(slot)");
 		assert(dg.indirect.funcptr);
         /* Do this:
          *    slots ~= slot;
@@ -210,10 +214,14 @@ struct Signal(T1...)
         slots ~= dg;
 
      L1:
-		if(obj)
+		if(obj) {
+			debug (signal) writefln("Attached unhook to %s", obj);
 			rt_attachDisposeEvent(obj, &unhook);
+		}
+		debug (signal) writefln("Signal.addSlot(slot) done");
     }
 	final void connect(string method, T2)(T2 obj) if(is(T2 : Object)) {
+        debug (signal) writefln("Signal.connect(obj)");
 		DelegateTypes t;
 		t.direct=mixin("&obj."~method);
 		t.direct.ptr=null; // Avoid a reference to the actual object.
@@ -224,6 +232,7 @@ struct Signal(T1...)
      */
     final void connect(T2)(T2 obj, void delegate(T2 obj, T1) dg)
     {
+        debug (signal) writefln("Signal.connect(delegate)");
 		DelegateTypes t;
 		t.indirect=cast(void delegate(void*, T1))(dg);
 		addSlot(obj, t);
@@ -240,8 +249,10 @@ struct Signal(T1...)
                 objs[i] = objs[slots_idx];
                 slots[slots_idx].direct = null;        // not strictly necessary
                 objs[slots_idx] = null;        // not strictly necessary
-				if(obj) 
+				if(obj)  {
 					rt_detachDisposeEvent(obj, &unhook);
+					debug (signal) writefln("Detached unhook to %s", obj);
+				}
             }
             else
                 i++;
@@ -355,13 +366,13 @@ unittest
             if (v != _value)
             {   _value = v;
                 extendedSig.emit("setting new value", v);
-				simpleSig.emit(v);
+				//simpleSig.emit(v);
             }
             return v;
         }
 
         Signal!(string, int) extendedSig;
-		Signal!(int) simpleSig;
+		//Signal!(int) simpleSig;
 
       private:
         int _value;
