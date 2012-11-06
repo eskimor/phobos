@@ -147,7 +147,7 @@ struct Signal(T1...)
     /***
      * Call each of the connected slots, passing the argument(s) i to them.
      */
-    final void emit( T1 i )
+    void emit( T1 i )
     {
         debug (signal) writefln("Signal.emit()");
         foreach (index, slot; slots[0 .. slots_idx])
@@ -166,7 +166,7 @@ struct Signal(T1...)
             }
         }
     }
-    private final void addSlot(T2)(T2 obj, DelegateTypes dg)
+    private void addSlot(T2)(T2 obj, DelegateTypes dg)
     {
         debug (signal) writefln("Signal.addSlot(slot)");
         /* Do this:
@@ -208,7 +208,7 @@ struct Signal(T1...)
         }
         debug (signal) writefln("Signal.addSlot(slot) done");
     }
-    final void connect(string method, T2)(T2 obj) if(is(T2 : Object)) {
+    void connect(string method, T2)(T2 obj) if(is(T2 : Object)) {
         debug (signal) writefln("Signal.connect(obj)");
         DelegateTypes t;
         t.direct=mixin("&obj."~method);
@@ -218,7 +218,7 @@ struct Signal(T1...)
     /***
      * Add a slot to the list of slots to be called when emit() is called.
      */
-    final void connect(T2)(T2 obj, void delegate(T2 obj, T1) dg)
+    void connect(T2)(T2 obj, void delegate(T2 obj, T1) dg)
     {
         debug (signal) stderr.writefln("Signal.connect(delegate)");
         DelegateTypes t;
@@ -226,7 +226,7 @@ struct Signal(T1...)
         addSlot(obj, t);
     }
 
-    private final void removeSlot(T2)(T2 obj, DelegateTypes dgs)
+    private void removeSlot(T2)(T2 obj, DelegateTypes dgs)
     {
         debug (signal) writefln("Signal.disconnect(slot)");
         for (size_t i = 0; i < slots_idx; )
@@ -250,14 +250,14 @@ struct Signal(T1...)
      * Remove a slot from the list of slots to be called when emit() is called.
      * Warning: Don't rely on the order slots being called is the same they have been registered, this will break as soon a slot is deregistered.
      */
-    final void disconnect(T2)(T2 obj, void delegate(T2, T1) dg)
+    void disconnect(T2)(T2 obj, void delegate(T2, T1) dg)
     {
         DelegateTypes t;
         t.indirect=cast(void delegate(void*, T1)) (dg);
         removeSlot(obj, dg);
     }
 
-    final void disconnect(string method, T2)(T2 obj) if(is(T2 : Object))
+    void disconnect(string method, T2)(T2 obj) if(is(T2 : Object))
     {
         DelegateTypes t;
         t.direct=mixin("&obj."~method);
@@ -266,7 +266,7 @@ struct Signal(T1...)
     }
 
     /// Easy disconnect a whole object.
-    final void disconnect(T2)(T2 obj) if(is(T2 : Object)) {
+    void disconnect(T2)(T2 obj) if(is(T2 : Object)) {
         assert(obj);
         auto old_idx=slots_idx;
         unhook(obj);
@@ -279,7 +279,7 @@ struct Signal(T1...)
      * It causes any slots dependent on o to be removed from the list
      * of slots to be called by emit().
      */
-    private final void unhook(Object o)
+    private void unhook(Object o)
     {
         debug (signal) stderr.writefln("Signal.unhook(o = %s)", cast(void*)o);
         for (size_t i = 0; i < slots_idx; )
