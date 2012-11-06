@@ -152,24 +152,23 @@ struct Signal(T1...)
         debug (signal) writefln("Signal.emit()");
         foreach (index, slot; slots[0 .. slots_idx])
         {   
-			if(slot.indirect.ptr) // It is an indirect call
-			{ 
-				debug (signal) writefln("Signal.emit() indirect");
-				slot.indirect(cast(void*)(objs[index]), i);
-			}
-			else // Direct call:
-			{ 
-				debug (signal) writefln("Signal.emit() direct, obj: %s", objs[index]);
-				auto dg=slot.direct;
-				dg.ptr=cast(void*)(objs[index]);
-				dg(i);
-			}
+            if(slot.indirect.ptr!=direct_ptr) // It is an indirect call
+            { 
+                debug (signal) writefln("Signal.emit() indirect");
+                slot.indirect(cast(void*)(objs[index]), i);
+            }
+            else // Direct call:
+            { 
+                debug (signal) writefln("Signal.emit() direct, obj: %s", objs[index]);
+                auto dg=slot.direct;
+                dg.ptr=cast(void*)(objs[index]);
+                dg(i);
+            }
         }
     }
     private final void addSlot(T2)(T2 obj, DelegateTypes dg)
     {
         debug (signal) writefln("Signal.addSlot(slot)");
-		assert(dg.indirect.funcptr);
         /* Do this:
          *    slots ~= slot;
          * but use malloc() and friends instead
@@ -196,51 +195,52 @@ struct Signal(T1...)
             }
         }
         objs[slots_idx] = obj;
-		assert(slots_idx<=slots.length);
-		if(slots_idx==slots.length)
-				slots ~= dg;
-		else
-				slots[slots_idx]=dg;
-		slots_idx++;
+        assert(slots_idx<=slots.length);
+        if(slots_idx==slots.length)
+            slots ~= dg;
+        else
+            slots[slots_idx]=dg;
+        slots_idx++;
 
-		if(obj) {
-			rt_attachDisposeEvent(obj, &unhook);
-		}
-		debug (signal) writefln("Signal.addSlot(slot) done");
+        if(obj) {
+            debug (signal) writefln("Attached dispose event to %s(%s)!", obj, cast(void*)obj);
+            rt_attachDisposeEvent(obj, &unhook);
+        }
+        debug (signal) writefln("Signal.addSlot(slot) done");
     }
-	final void connect(string method, T2)(T2 obj) if(is(T2 : Object)) {
+    final void connect(string method, T2)(T2 obj) if(is(T2 : Object)) {
         debug (signal) writefln("Signal.connect(obj)");
-		DelegateTypes t;
-		t.direct=mixin("&obj."~method);
-		t.direct.ptr=null; // Avoid a reference to the actual object.
-		addSlot(obj, t);
-	}
+        DelegateTypes t;
+        t.direct=mixin("&obj."~method);
+        t.direct.ptr=direct_ptr; // Avoid a reference to the actual object. Don't use null: A delegate formed from a function will also have a null ptr.
+        addSlot(obj, t);
+    }
     /***
      * Add a slot to the list of slots to be called when emit() is called.
      */
     final void connect(T2)(T2 obj, void delegate(T2 obj, T1) dg)
     {
-        debug (signal) writefln("Signal.connect(delegate)");
-		DelegateTypes t;
-		t.indirect=cast(void delegate(void*, T1))(dg);
-		addSlot(obj, t);
+        debug (signal) stderr.writefln("Signal.connect(delegate)");
+        DelegateTypes t;
+        t.indirect=cast(void delegate(void*, T1))(dg);
+        addSlot(obj, t);
     }
 
-    final void removeSlot(T2)(T2 obj, DelegateTypes dgs)
+    private final void removeSlot(T2)(T2 obj, DelegateTypes dgs)
     {
         debug (signal) writefln("Signal.disconnect(slot)");
         for (size_t i = 0; i < slots_idx; )
         {
-            if (slots[i] == dgs && objs[i]==obj)
+            if (slots[i] is dgs && objs[i] is obj)
             {   slots_idx--;
                 slots[i] = slots[slots_idx];
                 objs[i] = objs[slots_idx];
                 objs[slots_idx] = null;        // not strictly necessary
-				slots[slots_idx].direct=null; // strictly necessary!
-				if(obj)  {
-					rt_detachDisposeEvent(obj, &unhook);
-					debug (signal) writefln("Detached unhook to %s", obj);
-				}
+                slots[slots_idx].direct=null; // strictly necessary!
+                if(obj)  {
+                    rt_detachDisposeEvent(obj, &unhook);
+                    debug (signal) writefln("Detached unhook to %s", obj);
+                }
             }
             else
                 i++;
@@ -248,38 +248,38 @@ struct Signal(T1...)
     }
     /***
      * Remove a slot from the list of slots to be called when emit() is called.
-	 * Warning: Don't rely on the order slots being called is the same they have been registered, this will break as soon a slot is deregistered.
+     * Warning: Don't rely on the order slots being called is the same they have been registered, this will break as soon a slot is deregistered.
      */
     final void disconnect(T2)(T2 obj, void delegate(T2, T1) dg)
     {
-		DelegateTypes t;
-		t.indirect=cast(void delegate(void*, T1)) (dg);
-		removeSlot(obj, dg);
+        DelegateTypes t;
+        t.indirect=cast(void delegate(void*, T1)) (dg);
+        removeSlot(obj, dg);
     }
 
-	final void disconnect(string method, T2)(T2 obj) if(is(T2 : Object))
-	{
-		DelegateTypes t;
-		t.direct=mixin("&obj."~method);
-		t.direct.ptr=null;
-		removeSlot(obj, t);
-	}
+    final void disconnect(string method, T2)(T2 obj) if(is(T2 : Object))
+    {
+        DelegateTypes t;
+        t.direct=mixin("&obj."~method);
+        t.direct.ptr=direct_ptr;
+        removeSlot(obj, t);
+    }
 
-	/// Easy disconnect a whole object.
-	final void disconnect(T2)(T2 obj) if(is(T2 : Object)) {
-		assert(obj);
-		auto old_idx=slots_idx;
-		unhook(obj);
-		if(old_idx!=slots_idx) 
-			rt_detachDisposeEvent(obj, &unhook);
-	}
+    /// Easy disconnect a whole object.
+    final void disconnect(T2)(T2 obj) if(is(T2 : Object)) {
+        assert(obj);
+        auto old_idx=slots_idx;
+        unhook(obj);
+        if(old_idx!=slots_idx) 
+            rt_detachDisposeEvent(obj, &unhook);
+    }
 
     /* **
      * Special function called when o is destroyed.
      * It causes any slots dependent on o to be removed from the list
      * of slots to be called by emit().
      */
-    final void unhook(Object o)
+    private final void unhook(Object o)
     {
         debug (signal) stderr.writefln("Signal.unhook(o = %s)", cast(void*)o);
         for (size_t i = 0; i < slots_idx; )
@@ -287,8 +287,8 @@ struct Signal(T1...)
             if (objs[i] is o)
             {   slots_idx--;
                 slots[i] = slots[slots_idx];
-				objs[i] = objs[slots_idx];
-				slots[slots_idx].direct = null; // Strictly necessary!
+                objs[i] = objs[slots_idx];
+                slots[slots_idx].direct = null; // Strictly necessary!
                 objs[slots_idx] = null;        // not strictly necessary
             }
             else
@@ -319,15 +319,17 @@ struct Signal(T1...)
             slots = null;
         }
     }
-  private:
-	union DelegateTypes 
-	{
-		void delegate(void*, T1) indirect;
-		void delegate(T1) direct;
-	}
+    private:
+    union DelegateTypes 
+    {
+        void delegate(void*, T1) indirect;
+        void delegate(T1) direct;
+    }
     DelegateTypes[] slots;             // the slots to call from emit()
-	Object[] objs;
+    Object[] objs;
     size_t slots_idx;           // used length of slots[]
+    // Value used for indicating that a direct delegate is in use:
+    enum direct_ptr=cast(void*)(~0);
 }
 
 // A function whose sole purpose is to get this module linked in
@@ -350,13 +352,13 @@ unittest
         string captured_msg;
     }
 
-	class SimpleObserver 
-	{
-		void watchOnlyInt(int i) {
-			captured_value=i;
-		}
-		int captured_value;
-	}
+    class SimpleObserver 
+    {
+        void watchOnlyInt(int i) {
+            captured_value=i;
+        }
+        int captured_value;
+    }
 
     class Foo
     {
@@ -367,21 +369,21 @@ unittest
             if (v != _value)
             {   _value = v;
                 extendedSig.emit("setting new value", v);
-				//simpleSig.emit(v);
+                //simpleSig.emit(v);
             }
             return v;
         }
 
         Signal!(string, int) extendedSig;
-		//Signal!(int) simpleSig;
+        //Signal!(int) simpleSig;
 
-      private:
+        private:
         int _value;
     }
 
     Foo a = new Foo;
     Observer o = new Observer;
-	SimpleObserver so = new SimpleObserver;
+    SimpleObserver so = new SimpleObserver;
     // check initial condition
     assert(o.captured_value == 0);
     assert(o.captured_msg == "");
@@ -402,12 +404,14 @@ unittest
     a.value = 5;
     assert(o.captured_value == 4);
     assert(o.captured_msg == "setting new value");
-	//a.extendedSig.connect!Observer(o, (o, msg, i) { o.watch("Hahah", i); });
-	a.extendedSig.connect!Observer(o, (o, msg, i) => o.watch("Hahah", i) );
-	a.value=7;	
-	assert(o.captured_value == 7);
-	assert(o.captured_msg == "Hahah");
-	a.extendedSig.disconnect(o); // Simply disconnect o, otherwise we would have to store the lamda somewhere if we want to disconnect later on.
+    //a.extendedSig.connect!Observer(o, (obj, msg, i) { obj.watch("Hahah", i); });
+    a.extendedSig.connect!Observer(o, (obj, msg, i) => obj.watch("Hahah", i) );
+
+    a.value=7;	
+    debug (signal) stderr.writeln("After asignment!");
+    assert(o.captured_value == 7);
+    assert(o.captured_msg == "Hahah");
+    a.extendedSig.disconnect(o); // Simply disconnect o, otherwise we would have to store the lamda somewhere if we want to disconnect later on.
     // reconnect the watcher and make sure it triggers
     a.extendedSig.connect!"watch"(o);
     a.value = 6;
@@ -416,7 +420,9 @@ unittest
 
     // destroy the underlying object and make sure it doesn't cause
     // a crash or other problems
+    debug (signal) stderr.writefln("Disposing");
     destroy(o);
+    debug (signal) stderr.writefln("Disposed");
     a.value = 7;
 }
 
@@ -515,7 +521,7 @@ unittest {
         a.value2 = 42;
         a.value3 = 43;
     }
-    
+
     test(new Bar);
 
     class BarDerived: Bar
@@ -528,12 +534,12 @@ unittest {
         Signal!(string, int)  s5;
         Signal!(string, long) s6;
     }
-    
+
     auto a = new BarDerived;
-    
+
     test!Bar(a);
     test!BarDerived(a);
-    
+
     auto o4 = new Observer;
     auto o5 = new Observer;
     auto o6 = new Observer;
@@ -611,3 +617,4 @@ unittest
         mixin Signal!(string, int) s2;
     }
 }
+/* vim: set ts=4 sw=4 expandtab : */
