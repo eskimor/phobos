@@ -195,10 +195,14 @@ struct Signal(T1...)
                 objs[slots_idx + 1 .. $] = null;
             }
         }
-        objs[slots_idx++] = obj;
-        slots ~= dg;
+        objs[slots_idx] = obj;
+		assert(slots_idx<=slots.length);
+		if(slots_idx==slots.length)
+				slots ~= dg;
+		else
+				slots[slots_idx]=dg;
+		slots_idx++;
 
-L1:
 		if(obj) {
 			rt_attachDisposeEvent(obj, &unhook);
 		}
@@ -232,7 +236,7 @@ L1:
                 slots[i] = slots[slots_idx];
                 objs[i] = objs[slots_idx];
                 objs[slots_idx] = null;        // not strictly necessary
-                slots.length=slots.length-1;
+				slots[slots_idx].direct=null; // strictly necessary!
 				if(obj)  {
 					rt_detachDisposeEvent(obj, &unhook);
 					debug (signal) writefln("Detached unhook to %s", obj);
@@ -284,7 +288,7 @@ L1:
             {   slots_idx--;
                 slots[i] = slots[slots_idx];
 				objs[i] = objs[slots_idx];
-				slots.length=slots.length-1;
+				slots[slots_idx].direct = null; // Strictly necessary!
                 objs[slots_idx] = null;        // not strictly necessary
             }
             else
@@ -315,9 +319,6 @@ L1:
             slots = null;
         }
     }
-	invariant() {
-		assert(slots_idx==slots.length); // I probably even remove slots_idx all together.
-	}
   private:
 	union DelegateTypes 
 	{
