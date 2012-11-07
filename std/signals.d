@@ -146,6 +146,7 @@ void main()
   *	- Reduce memory usage by using a single array.
   *	- Ensure correctness on exceptions
   *	- Checkout why I should use ==class instead of : Object and do it if it improves things
+  * - Add strongConnect() method.
   *	- Think about const correctness
   *	- Mark it as trusted
   *	- Write unit tests
