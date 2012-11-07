@@ -139,6 +139,21 @@ void main()
  *
  */
 
+/**
+  * Todo:
+  *	- Provide an elegant way of restricting peoples' access to a signal. (Usually only the containing object should be able to emit the signal.)
+  *	- Handle slots removing/adding slots to the signal. (My current idea will enable adding/removing but will throw an exception if a slot calls emit.)
+  *	- Reduce memory usage by using a single array.
+  *	- Ensure correctness on exceptions
+  *	- Checkout why I should use ==class instead of : Object and do it if it improves things
+  *	- Think about const correctness
+  *	- Mark it as trusted
+  *	- Write unit tests
+  *	- Rename it to std.signals2
+  *	- Update documentation
+  *	- Fix coding style to style guidlines of phobos.
+  *	- Get it into review for phobos :-)
+  */
 struct Signal(T1...)
 {
     static import std.c.stdlib;
@@ -146,6 +161,8 @@ struct Signal(T1...)
 
     /***
      * Call each of the connected slots, passing the argument(s) i to them.
+	 * Todo: Handle exceptions: Make sure all slots are being called when an exception occurs. And rethrow a list
+	 * of all exceptions.
      */
     void emit( T1 i )
     {
