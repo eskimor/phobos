@@ -143,7 +143,7 @@ void main()
   * Todo:
   *	- Provide an elegant way of restricting peoples' access to a signal. (Usually only the containing object should be able to emit the signal.)
   *	- Handle slots removing/adding slots to the signal. (My current idea will enable adding/removing but will throw an exception if a slot calls emit.)
-  *	- Reduce memory usage by using a single array.
+  *	- DONE: Reduce memory usage by using a single array.
   *	- Ensure correctness on exceptions
   *	- Checkout why I should use ==class instead of : Object and do it if it improves things
   * - Add strongConnect() method.
@@ -153,6 +153,9 @@ void main()
   *	- Rename it to std.signals2
   *	- Update documentation
   *	- Fix coding style to style guidlines of phobos.
+  * - Document design decisions:
+        - Why use mixin: So only containing object can emit signals+ copying a signal is not possible.
+        - Performance wise: Optimize for very small empty signal, it should be no more than pointer+length. connect/disconnect is optimized to be fast in the case that emit is not currently running. Memory allocation is only done if active.
   *	- Get it into review for phobos :-)
   */
 struct Signal(T1...)
@@ -168,18 +171,18 @@ struct Signal(T1...)
     void emit( T1 i )
     {
         debug (signal) writefln("Signal.emit()");
-        foreach (index, slot; slots[0 .. slots_idx])
+        foreach (slot; slots)
         {   
-            if(slot.indirect.ptr!=direct_ptr) // It is an indirect call
+            if(slot.dg.indirect.ptr!=direct_ptr_flag) // It is an indirect call
             { 
                 debug (signal) writefln("Signal.emit() indirect");
-                slot.indirect(cast(void*)(objs[index]), i);
+                slot.dg.indirect(slot.obj, i);
             }
             else // Direct call:
             { 
-                debug (signal) writefln("Signal.emit() direct, obj: %s", objs[index]);
-                auto dg=slot.direct;
-                dg.ptr=cast(void*)(objs[index]);
+                debug (signal) writefln("Signal.emit() direct, obj: %s", slot.obj);
+                auto dg=slot.dg.direct;
+                dg.ptr=cast(void*)(slot.obj);
                 dg(i);
             }
         }
@@ -187,50 +190,16 @@ struct Signal(T1...)
     private void addSlot(T2)(T2 obj, DelegateTypes dg)
     {
         debug (signal) writefln("Signal.addSlot(slot)");
-        /* Do this:
-         *    slots ~= slot;
-         * but use malloc() and friends instead
-         */
-        auto len = slots.length;
-        if (slots_idx == len)
-        {
-            if (objs.length == 0)
-            {
-                len = 4;
-                auto p = std.c.stdlib.calloc(Object.sizeof, len);
-                if (!p)
-                    core.exception.onOutOfMemoryError();
-                objs = (cast(Object*)p)[0 .. len];
-            }
-            else
-            {
-                len = len * 2 + 4;
-                auto p = std.c.stdlib.realloc(objs.ptr, Object.sizeof * len);
-                if (!p)
-                    core.exception.onOutOfMemoryError();
-                objs = (cast(Object*)p)[0 .. len];
-                objs[slots_idx + 1 .. $] = null;
-            }
-        }
-        objs[slots_idx] = obj;
-        assert(slots_idx<=slots.length);
-        if(slots_idx==slots.length)
-            slots ~= dg;
-        else
-            slots[slots_idx]=dg;
-        slots_idx++;
-
+        slots~=Slot(obj, dg);
         if(obj) {
-            debug (signal) writefln("Attached dispose event to %s(%s)!", obj, cast(void*)obj);
             rt_attachDisposeEvent(obj, &unhook);
         }
-        debug (signal) writefln("Signal.addSlot(slot) done");
     }
     void connect(string method, T2)(T2 obj) if(is(T2 : Object)) {
         debug (signal) writefln("Signal.connect(obj)");
         DelegateTypes t;
         t.direct=mixin("&obj."~method);
-        t.direct.ptr=direct_ptr; // Avoid a reference to the actual object. Don't use null: A delegate formed from a function will also have a null ptr.
+        t.direct.ptr=direct_ptr_flag; // Avoid a reference to the actual object. Don't use null: A delegate formed from a function will also have a null ptr.
         addSlot(obj, t);
     }
     /***
@@ -240,22 +209,21 @@ struct Signal(T1...)
     {
         debug (signal) stderr.writefln("Signal.connect(delegate)");
         DelegateTypes t;
-        t.indirect=cast(void delegate(void*, T1))(dg);
+        t.indirect=cast(void delegate(Object, T1))(dg);
         addSlot(obj, t);
     }
 
-    private void removeSlot(T2)(T2 obj, DelegateTypes dgs)
+    private void removeSlot(Object obj, DelegateTypes dgs=DelegateTypes(), bool detach=true)
     {
         debug (signal) writefln("Signal.disconnect(slot)");
-        for (size_t i = 0; i < slots_idx; )
+        for(int i=0; i<slots.length; )
         {
-            if (slots[i] is dgs && objs[i] is obj)
-            {   slots_idx--;
-                slots[i] = slots[slots_idx];
-                objs[i] = objs[slots_idx];
-                objs[slots_idx] = null;        // not strictly necessary
-                slots[slots_idx].direct=null; // strictly necessary!
-                if(obj)  {
+            if (slots[i].obj is obj && (dgs==DelegateTypes() || slots[i].dg is dgs))
+            {   
+                slots[i]=slots[slots.length-1];
+                slots.length=slots.length-1;
+                slots.assumeSafeAppend();
+                if(obj && detach)  {
                     rt_detachDisposeEvent(obj, &unhook);
                     debug (signal) writefln("Detached unhook to %s", obj);
                 }
@@ -271,7 +239,7 @@ struct Signal(T1...)
     void disconnect(T2)(T2 obj, void delegate(T2, T1) dg)
     {
         DelegateTypes t;
-        t.indirect=cast(void delegate(void*, T1)) (dg);
+        t.indirect=cast(void delegate(Object, T1)) (dg);
         removeSlot(obj, dg);
     }
 
@@ -279,17 +247,14 @@ struct Signal(T1...)
     {
         DelegateTypes t;
         t.direct=mixin("&obj."~method);
-        t.direct.ptr=direct_ptr;
+        t.direct.ptr=direct_ptr_flag;
         removeSlot(obj, t);
     }
 
     /// Easy disconnect a whole object.
     void disconnect(T2)(T2 obj) if(is(T2 : Object)) {
         assert(obj);
-        auto old_idx=slots_idx;
-        unhook(obj);
-        if(old_idx!=slots_idx) 
-            rt_detachDisposeEvent(obj, &unhook);
+        removeSlot(obj);
     }
 
     /* **
@@ -299,19 +264,7 @@ struct Signal(T1...)
      */
     private void unhook(Object o)
     {
-        debug (signal) stderr.writefln("Signal.unhook(o = %s)", cast(void*)o);
-        for (size_t i = 0; i < slots_idx; )
-        {
-            if (objs[i] is o)
-            {   slots_idx--;
-                slots[i] = slots[slots_idx];
-                objs[i] = objs[slots_idx];
-                slots[slots_idx].direct = null; // Strictly necessary!
-                objs[slots_idx] = null;        // not strictly necessary
-            }
-            else
-                i++;
-        }
+        removeSlot(o, DelegateTypes(), false);
     }
 
     /* **
@@ -326,28 +279,62 @@ struct Signal(T1...)
          */
         if (slots)
         {
-            foreach (o; objs[0 .. slots_idx])
+            foreach (slot; slots)
             {
-                if (o)
+                if (slot.obj)
                 {   
-                    rt_detachDisposeEvent(o, &unhook);
+                    rt_detachDisposeEvent(slot.obj, &unhook);
                 }
             }
-            std.c.stdlib.free(objs.ptr);
             slots = null;
         }
     }
     private:
     union DelegateTypes 
     {
-        void delegate(void*, T1) indirect;
+        void delegate(Object, T1) indirect;
         void delegate(T1) direct;
     }
-    DelegateTypes[] slots;             // the slots to call from emit()
-    Object[] objs;
-    size_t slots_idx;           // used length of slots[]
+    struct Slot {
+        this(Object obj, DelegateTypes dg) 
+        {
+            this.obj=obj;
+            this.dg=dg;
+        }
+        @property Object obj() 
+        {
+            auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
+            return cast(Object)(tmp);
+        }
+        @property void obj(Object o) 
+        {
+            auto tmp = ~cast(ptrdiff_t)(cast(void*)o); // Invert pointer, so it is not in garbage collected memory.
+            debug(signal) obj_invariant=o;
+            obj_= cast(void*)(tmp); 
+            debug(signal) stderr.writefln("obj: %s, original: %s", cast(void*)(obj), cast(void*)(o));
+        }
+        void setObj(void* o) // set directly
+        {
+            debug(signal) obj_invariant=cast(Object)o;
+            auto tmp=~(cast(ptrdiff_t)o);
+            obj_=cast(void*)o;
+        }
+        DelegateTypes dg;
+        debug(signal) {
+            invariant() {
+                auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
+                debug(signal) stderr.writefln("tmp: %s, inv obj: %s", tmp, cast(void*)(obj_invariant));
+                assert(obj_invariant==cast(Object)tmp);
+            }
+        }
+        private:
+        void* obj_=cast(void*)(~0);
+        debug(signal) Object obj_invariant=null;
+    }
+    Slot[] slots;
     // Value used for indicating that a direct delegate is in use:
-    enum direct_ptr=cast(void*)(~0);
+    enum direct_ptr_flag=cast(void*)(~0);
+    enum emit_in_progress=cast(void*)(~0-1);
 }
 
 // A function whose sole purpose is to get this module linked in
