@@ -290,53 +290,74 @@ struct Signal(T1...)
         }
     }
     private:
-    union DelegateTypes 
-    {
-        void delegate(Object, T1) indirect;
-        void delegate(T1) direct;
-    }
-    struct Slot {
-        this(Object obj, DelegateTypes dg) 
-        {
-            this.obj=obj;
-            this.dg=dg;
-        }
-        @property Object obj() 
-        {
-            auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
-            return cast(Object)(tmp);
-        }
-        @property void obj(Object o) 
-        {
-            auto tmp = ~cast(ptrdiff_t)(cast(void*)o); // Invert pointer, so it is not in garbage collected memory.
-            debug(signal) obj_invariant=o;
-            obj_= cast(void*)(tmp); 
-            debug(signal) stderr.writefln("obj: %s, original: %s", cast(void*)(obj), cast(void*)(o));
-        }
-        void setObj(void* o) // set directly
-        {
-            debug(signal) obj_invariant=cast(Object)o;
-            auto tmp=~(cast(ptrdiff_t)o);
-            obj_=cast(void*)o;
-        }
-        DelegateTypes dg;
-        debug(signal) {
-            invariant() {
-                auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
-                debug(signal) stderr.writefln("tmp: %s, inv obj: %s", tmp, cast(void*)(obj_invariant));
-                assert(obj_invariant==cast(Object)tmp);
-            }
-        }
-        private:
-        void* obj_=cast(void*)(~0);
-        debug(signal) Object obj_invariant=null;
-    }
     Slot[] slots;
     // Value used for indicating that a direct delegate is in use:
     enum direct_ptr_flag=cast(void*)(~0);
     enum emit_in_progress=cast(void*)(~0-1);
+    union DelegateTypes
+    {
+        void delegate(Object, T1) indirect;
+        void delegate(T1) direct;
+    }
+    version (D_LP64) 
+    {
+        struct Slot {
+            this(Object obj, DelegateTypes dg) 
+            {
+                this.obj=obj;
+                this.dg=dg;
+            }
+            @property Object obj() 
+            {
+                auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
+                return cast(Object)(tmp);
+            }
+            @property void obj(Object o) 
+            {
+                auto tmp = ~cast(ptrdiff_t)(cast(void*)o); // Invert pointer, so it is not in garbage collected memory.
+                debug(signal) obj_invariant=o;
+                obj_= cast(void*)(tmp); 
+                debug(signal) stderr.writefln("obj: %s, original: %s", cast(void*)(obj), cast(void*)(o));
+            }
+            DelegateTypes dg;
+            debug(signal) {
+                invariant() {
+                    auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
+                    debug(signal) stderr.writefln("tmp: %s, inv obj: %s", tmp, cast(void*)(obj_invariant));
+                    assert(obj_invariant==cast(Object)tmp);
+                }
+            }
+            private:
+            void* obj_=cast(void*)(~0);
+            debug(signal) Object obj_invariant=null;
+        }
+    }
+    else 
+    {
+        struct Slot {
+            this(Object obj, DelegateTypes dg) 
+            {
+                this.obj=obj;
+                this.dg=dg;
+            }
+            @property Object obj() 
+            {
+                void* tmp = cast(void*)(obj_high_<<16 | obj_low_);
+                return cast(Object)(tmp);
+            }
+            @property void obj(Object o) 
+            {
+                auto tmp = cast(ptrdiff_t) cast(void*) o;
+                obj_high_ = (tmp>>16)&0x0000ffff;
+                obj_low_ = tmp&0x0000ffff;
+            }
+            DelegateTypes dg;
+            private:
+            ptrdiff_t obj_high_;
+            ptrdiff_t obj_low_;
+        }
+    }
 }
-
 // A function whose sole purpose is to get this module linked in
 // so the unittest will run.
 void linkin() { }
