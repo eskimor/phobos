@@ -141,15 +141,19 @@ void main()
 
 /**
   * Todo:
-  *	- Provide an elegant way of restricting peoples' access to a signal. (Usually only the containing object should be able to emit the signal.)
   *	- Handle slots removing/adding slots to the signal. (My current idea will enable adding/removing but will throw an exception if a slot calls emit.)
   *	- DONE: Reduce memory usage by using a single array.
-  *	- Ensure correctness on exceptions
+  *	- Ensure correctness on exceptions (chain them)
   *	- Checkout why I should use ==class instead of : Object and do it if it improves things
   * - Add strongConnect() method.
+  * - Block signal functionality?
   *	- Think about const correctness
   *	- Mark it as trusted
   *	- Write unit tests
+  * - Factor out template agnostic code to non templated code. (Use casts) 
+  *     -> Avoids template bloat
+  *     -> We can drop linkin()
+  * - Provide a mixin wrapper, so only the containing object can emit a signal, with no additional work needed.
   *	- Rename it to std.signals2
   *	- Update documentation
   *	- Fix coding style to style guidlines of phobos.
@@ -299,69 +303,72 @@ struct Signal(T1...)
         void delegate(Object, T1) indirect;
         void delegate(T1) direct;
     }
-    version (D_LP64) 
-    {
-        struct Slot {
-            this(Object obj, DelegateTypes dg) 
-            {
-                this.obj=obj;
-                this.dg=dg;
-            }
-            @property Object obj() 
-            {
-                auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
-                return cast(Object)(tmp);
-            }
-            @property void obj(Object o) 
-            {
-                auto tmp = ~cast(ptrdiff_t)(cast(void*)o); // Invert pointer, so it is not in garbage collected memory.
-                debug(signal) obj_invariant=o;
-                obj_= cast(void*)(tmp); 
-                debug(signal) stderr.writefln("obj: %s, original: %s", cast(void*)(obj), cast(void*)(o));
-            }
-            DelegateTypes dg;
-            debug(signal) {
-                invariant() {
-                    auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
-                    debug(signal) stderr.writefln("tmp: %s, inv obj: %s", tmp, cast(void*)(obj_invariant));
-                    assert(obj_invariant==cast(Object)tmp);
-                }
-            }
-            private:
-            void* obj_=cast(void*)(~0);
-            debug(signal) Object obj_invariant=null;
-        }
-    }
-    else 
-    {
-        struct Slot {
-            this(Object obj, DelegateTypes dg) 
-            {
-                this.obj=obj;
-                this.dg=dg;
-            }
-            @property Object obj() 
-            {
-                void* tmp = cast(void*)(obj_high_<<16 | obj_low_);
-                return cast(Object)(tmp);
-            }
-            @property void obj(Object o) 
-            {
-                auto tmp = cast(ptrdiff_t) cast(void*) o;
-                obj_high_ = (tmp>>16)&0x0000ffff;
-                obj_low_ = tmp&0x0000ffff;
-            }
-            DelegateTypes dg;
-            private:
-            ptrdiff_t obj_high_;
-            ptrdiff_t obj_low_;
-        }
     }
 }
 // A function whose sole purpose is to get this module linked in
 // so the unittest will run.
 void linkin() { }
 
+private struct Slot {
+    this(Object obj, DelegateTypes dg) 
+    {
+        this.obj=obj;
+        this.dg=dg;
+    }
+    @property Object obj() 
+    {
+        return obj_.obj;
+    }
+    @property obj(Object o)  
+    {
+        obj_.obj=o;
+    }
+    DelegateTypes dg;
+    private:
+    InvisibleRef obj_;
+}
+
+// Provides a way of holding a reference to an object, without the GC seeing it.
+private struct InvisibleRef
+{
+    this(Object o) 
+    {
+        obj=o;
+    }
+    @property Object obj() 
+    {
+        version (D_LP64) 
+            auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
+        else 
+            auto tmp = cast(void*)(obj_high_<<16 | obj_low_);
+        return cast(Object)(tmp);
+    }
+    @property void obj(Object o) 
+    {
+        version (D_LP64) 
+        {
+            auto tmp = ~cast(ptrdiff_t)(cast(void*)o); // Invert pointer, so it is not in garbage collected memory.
+            obj_= cast(void*)(tmp); 
+            rt_attachDisposeEvent(obj, &unhook);
+        }
+        else {
+            auto tmp = cast(ptrdiff_t) cast(void*) o;
+            obj_high_ = (tmp>>16)&0x0000ffff;
+            obj_low_ = tmp&0x0000ffff;
+        }
+        assert(obj==o);
+    }
+    private:
+    version(D_LP64) 
+    {
+        void* obj_;
+    }
+    else 
+    {
+        ptrdiff_t obj_high_;
+        ptrdiff_t obj_low_;
+    }
+}
 unittest
 {
     class Observer
