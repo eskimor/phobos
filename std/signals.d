@@ -148,6 +148,7 @@ void main()
   * - Add strongConnect() method.
   * - Block signal functionality?
   *	- Think about const correctness
+  * - Implement postblit and op assign & write unittest for these.
   *	- Mark it as trusted
   *	- Write unit tests
   * - Factor out template agnostic code to non templated code. (Use casts) 
