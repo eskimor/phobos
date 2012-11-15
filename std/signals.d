@@ -142,6 +142,10 @@ void main()
 /**
   * Todo:
   *	- Handle slots removing/adding slots to the signal. (My current idea will enable adding/removing but will throw an exception if a slot calls emit.)
+  *     - emit called while in emit would easily be possible with fibers, two solutions:
+            - simply allow it. Meaning that the second emit is executed before the first one has finished.
+            - queue it and execute it, when the first one has finished.
+            The second one is more complex to implement, but seems to be the better solution. In fact it is not, because you basically serialize multiple fibers which can pretty much make them useless. In the first case, the slot has to handle the case when being called before an io operation is finished but this also means that it can do load balancing or whatever. With the queue implementation the access would just be serialized and the slot implementation could not do anything about it. So in fact the first implementation is also the expected one, even in the case of fibers.
   *	- DONE: Reduce memory usage by using a single array.
   *	- Ensure correctness on exceptions (chain them)
   *	- Checkout why I should use ==class instead of : Object and do it if it improves things
