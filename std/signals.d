@@ -141,21 +141,22 @@ void main()
 
 /**
   * Todo:
-  *	- Handle slots removing/adding slots to the signal. (My current idea will enable adding/removing but will throw an exception if a slot calls emit.)
-  *     - emit called while in emit would easily be possible with fibers, two solutions:
+  *	- DONE: Handle slots removing/adding slots to the signal. (My current idea will enable adding/removing but will throw an exception if a slot calls emit.)
+  *     - DONE: emit called while in emit would easily be possible with fibers, two solutions:
             - simply allow it. Meaning that the second emit is executed before the first one has finished.
             - queue it and execute it, when the first one has finished.
             The second one is more complex to implement, but seems to be the better solution. In fact it is not, because you basically serialize multiple fibers which can pretty much make them useless. In the first case, the slot has to handle the case when being called before an io operation is finished but this also means that it can do load balancing or whatever. With the queue implementation the access would just be serialized and the slot implementation could not do anything about it. So in fact the first implementation is also the expected one, even in the case of fibers.
   *	- DONE: Reduce memory usage by using a single array.
-  *	- Ensure correctness on exceptions (chain them)
+  *	- DONE: Ensure correctness on exceptions (chain them)
   *	- Checkout why I should use ==class instead of : Object and do it if it improves things
   * - Add strongConnect() method.
   * - Block signal functionality?
   *	- Think about const correctness
   * - Implement postblit and op assign & write unittest for these.
+  * - Document not to rely on order in which the slots are called.
   *	- Mark it as trusted
   *	- Write unit tests
-  * - Factor out template agnostic code to non templated code. (Use casts) 
+  * - DONE: Factor out template agnostic code to non templated code. (Use casts) 
   *     -> Avoids template bloat
   *     -> We can drop linkin()
   * - Provide a mixin wrapper, so only the containing object can emit a signal, with no additional work needed.
@@ -172,37 +173,8 @@ struct Signal(T1...)
     static import std.c.stdlib;
     static import core.exception;
 
-    /***
-     * Call each of the connected slots, passing the argument(s) i to them.
-	 * Todo: Handle exceptions: Make sure all slots are being called when an exception occurs. And rethrow a list
-	 * of all exceptions.
-     */
     void emit( T1 i )
     {
-        debug (signal) writefln("Signal.emit()");
-        foreach (slot; slots)
-        {   
-            if(slot.dg.indirect.ptr!=direct_ptr_flag) // It is an indirect call
-            { 
-                debug (signal) writefln("Signal.emit() indirect");
-                slot.dg.indirect(slot.obj, i);
-            }
-            else // Direct call:
-            { 
-                debug (signal) writefln("Signal.emit() direct, obj: %s", slot.obj);
-                auto dg=slot.dg.direct;
-                dg.ptr=cast(void*)(slot.obj);
-                dg(i);
-            }
-        }
-    }
-    private void addSlot(T2)(T2 obj, DelegateTypes dg)
-    {
-        debug (signal) writefln("Signal.addSlot(slot)");
-        slots~=Slot(obj, dg);
-        if(obj) {
-            rt_attachDisposeEvent(obj, &unhook);
-        }
     }
     void connect(string method, T2)(T2 obj) if(is(T2 : Object)) {
         debug (signal) writefln("Signal.connect(obj)");
@@ -222,25 +194,6 @@ struct Signal(T1...)
         addSlot(obj, t);
     }
 
-    private void removeSlot(Object obj, DelegateTypes dgs=DelegateTypes(), bool detach=true)
-    {
-        debug (signal) writefln("Signal.disconnect(slot)");
-        for(int i=0; i<slots.length; )
-        {
-            if (slots[i].obj is obj && (dgs==DelegateTypes() || slots[i].dg is dgs))
-            {   
-                slots[i]=slots[slots.length-1];
-                slots.length=slots.length-1;
-                slots.assumeSafeAppend();
-                if(obj && detach)  {
-                    rt_detachDisposeEvent(obj, &unhook);
-                    debug (signal) writefln("Detached unhook to %s", obj);
-                }
-            }
-            else
-                i++;
-        }
-    }
     /***
      * Remove a slot from the list of slots to be called when emit() is called.
      * Warning: Don't rely on the order slots being called is the same they have been registered, this will break as soon a slot is deregistered.
@@ -266,59 +219,136 @@ struct Signal(T1...)
         removeSlot(obj);
     }
 
+    private:
+    SignalImpl impl_;
+}
+
+private struct SignalImpl
+{
+    void emit(Args...)( Args args )
+    {
+        if(!slots_.length) // Fast path for no slots.
+            return;
+        bool did_mark=false; // Ensure proper operation in case of nested emit calls.
+        if(slots_[$-1]!=SlotImpl.init) // Only mark if not already marked. (emit could be called from a slot or a fiber)
+        {
+            slots_~=SlotImpl.init; // Put mark so other methods know that emit is in progress.
+            did_mark=true;
+        }
+        scope (exit) 
+        {
+            if(did_mark && slots_.length && slots_[$-1] is SlotImpl.init) // If nothing happened, undo mark.
+            {
+                slots_.length=slots_.length-1;
+                slots_.assumeSafeAppend();
+            }
+        }
+
+        doEmit(slots_[0..$-1], args);
+    }
+
+    void addSlot(Object obj, void delegate() dg)
+    {
+        bool emit_in_progress = slots_.length && slots_[$-1]==SlotImpl.init;
+        auto new_slot = obj ? SlotImpl(obj, dg) : SlotImpl(dg);
+        if(emit_in_progress)
+        {
+            slots_[$-1]=new_slot;
+            slots_~=SlotImpl.init;
+        }
+        else 
+            slots_~=new_slot;
+        if(obj) 
+            rt_attachDisposeEvent(obj, &unhook);
+    }
+    void removeSlot(Object obj, void delegate() dg)
+    {
+        auto removal=obj ? SlotImpl(obj, dg) : SlotImpl(dg);
+        removeSlot((which) => removal is which);
+    }
+    void removeSlot(Object obj, bool detach=true) 
+    {
+        removeSlot((which) => which.obj is obj);
+    }
     /* **
      * Special function called when o is destroyed.
      * It causes any slots dependent on o to be removed from the list
      * of slots to be called by emit().
      */
-    private void unhook(Object o)
+    void unhook(Object o)
     {
-        removeSlot(o, DelegateTypes(), false);
+        removeSlot(o, false);
     }
 
-    /* **
-     * There can be multiple destructors inserted by mixins.
-     */
     ~this()
     {
-        /* **
-         * When this object is destroyed, need to let every slot
-         * know that this object is destroyed so they are not left
-         * with dangling references to it.
-         */
-        if (slots)
+        foreach (slot; slots_)
         {
-            foreach (slot; slots)
-            {
-                if (slot.obj)
-                {   
-                    rt_detachDisposeEvent(slot.obj, &unhook);
-                }
+            auto o=slot.obj;
+            if (o)
+            {   
+                rt_detachDisposeEvent(o, &unhook); // Avoid dangling references.
             }
-            slots = null;
         }
     }
-    private:
-    Slot[] slots;
-    // Value used for indicating that a direct delegate is in use:
-    enum direct_ptr_flag=cast(void*)(~0);
-    enum emit_in_progress=cast(void*)(~0-1);
-    union DelegateTypes
+    private: // Private is more of a documentation in an already private context. Stuff not meant to be used outside this struct:
+    void removeSlot(bool delegate(in ref SlotImpl) isRemoved, bool detach=true)
     {
-        void delegate(Object, T1) indirect;
-        void delegate(T1) direct;
+        if(slots_.length && slots_[$-1] is SlotImpl.init)  // Emit in progress, copy necessary
+            slots_=slots_[0..$-1].dup;
+        for(int i=0; i<slots_.length; )
+        {
+            if (isRemoved(slots_[i]))
+            {   
+                slots_[i]=slots_[slots_.length-1];
+                slots_.length=slots_.length-1;
+                slots_.assumeSafeAppend();
+                auto o=slots[i].obj;
+                if(o && detach)  
+                    rt_detachDisposeEvent(o, &unhook);
+            }
+            else
+                i++;
+        }
     }
-    }
-}
-// A function whose sole purpose is to get this module linked in
-// so the unittest will run.
-void linkin() { }
 
-private struct Slot {
-    this(Object obj, DelegateTypes dg) 
+    // Helper method to allow all slots being called even in case on an exception. 
+    // All exceptions that occur will be chained.
+    void doEmit(Args...)( SlotImpl[] slots, Args args )
     {
-        this.obj=obj;
-        this.dg=dg;
+        foreach (i, slot; slots)
+        {   
+            try 
+            {
+                slot(args);
+            }
+            finally 
+            {
+                doEmit(slots[i+1 ..$], args); // Carry on.
+            }
+        }
+    }
+
+    SlotImpl[] slots_;
+}
+
+// Simple convenience struct for signal implementation.
+// Its is inherently unsafe. It is not a template so SignalImpl does not need to be one.
+private struct SlotImpl 
+{
+    this(Object o, void delegate() dg) 
+    {
+        obj=o;
+        dg_= dg;
+        if(dg_.ptr==o) 
+            dg_.ptr=direct_ptr_flag;
+
+    }
+    // Use for strong ref slots:
+    this(void delegate() dg) 
+    {
+        obj=cast(Object)strong_ptr_flag;
+        dg_= dg;
     }
     @property Object obj() 
     {
@@ -328,10 +358,32 @@ private struct Slot {
     {
         obj_.obj=o;
     }
-    DelegateTypes dg;
+    void opCall(Args...)(Args args)
+    {
+        assert(dg);
+        Object o=obj;
+        void* o_addr=(cast(void*)(o);
+        if(dg.ptr==direct_ptr_flag || o_addr == strong_ptr_flag) 
+        {
+            auto mdg=cast(void delegate(Args)) dg;
+            if(o_addr!=strong_ptr_flag)
+                mdg.ptr=cast(void*)obj;
+            mdg(args);
+        }
+        else 
+        {
+            auto mdg=cast(void delegate(Object, Args)) dg;
+            mdg(obj, args);
+        }
+
+    }
     private:
+    void delegate() dg_;
     InvisibleRef obj_;
+    enum direct_ptr_flag=cast(void*)(~0);
+    enum strong_ptr_flag=direct_ptr_flag;
 }
+
 
 // Provides a way of holding a reference to an object, without the GC seeing it.
 private struct InvisibleRef
@@ -354,7 +406,6 @@ private struct InvisibleRef
         {
             auto tmp = ~cast(ptrdiff_t)(cast(void*)o); // Invert pointer, so it is not in garbage collected memory.
             obj_= cast(void*)(tmp); 
-            rt_attachDisposeEvent(obj, &unhook);
         }
         else {
             auto tmp = cast(ptrdiff_t) cast(void*) o;
@@ -366,7 +417,7 @@ private struct InvisibleRef
     private:
     version(D_LP64) 
     {
-        void* obj_;
+        void* obj_=cast(void*)~cast(ptrdiff_t)(null);
     }
     else 
     {
