@@ -168,56 +168,144 @@ void main()
         - Performance wise: Optimize for very small empty signal, it should be no more than pointer+length. connect/disconnect is optimized to be fast in the case that emit is not currently running. Memory allocation is only done if active.
   *	- Get it into review for phobos :-)
   */
-struct Signal(T1...)
+struct Signal(Args...)
 {
-    static import std.c.stdlib;
-    static import core.exception;
-
-    void emit( T1 i )
+    void emit( Args args )
     {
+        impl_.emit(args);
     }
-    void connect(string method, T2)(T2 obj) if(is(T2 : Object)) {
-        debug (signal) writefln("Signal.connect(obj)");
-        DelegateTypes t;
-        t.direct=mixin("&obj."~method);
-        t.direct.ptr=direct_ptr_flag; // Avoid a reference to the actual object. Don't use null: A delegate formed from a function will also have a null ptr.
-        addSlot(obj, t);
-    }
-    /***
-     * Add a slot to the list of slots to be called when emit() is called.
-     */
-    void connect(T2)(T2 obj, void delegate(T2 obj, T1) dg)
+    /**
+      * Direct connection to an object.
+      *
+      * Use this method if you want to connect directly to an objects method matching the signature of this signal.
+      * The connection will have weak reference semantics, meaning if you drop all references to the object the garbage
+      * collector will collect it and this connection will be removed.
+      * Preconditions: obj must not be null. mixin("&obj."~method) must be valid and compatible.
+      * Params:
+      *     obj = Some object of a class implementing a method compatible with this signal.
+      */
+    void connect(string method, ClassType)(ClassType obj) if(is(ClassType == class) && __traits(compiles, {void delegate(Args) dg=mixin("&obj."~method);}))
+    in
     {
-        debug (signal) stderr.writefln("Signal.connect(delegate)");
-        DelegateTypes t;
-        t.indirect=cast(void delegate(Object, T1))(dg);
-        addSlot(obj, t);
-    }
-
-    /***
-     * Remove a slot from the list of slots to be called when emit() is called.
-     * Warning: Don't rely on the order slots being called is the same they have been registered, this will break as soon a slot is deregistered.
-     */
-    void disconnect(T2)(T2 obj, void delegate(T2, T1) dg)
-    {
-        DelegateTypes t;
-        t.indirect=cast(void delegate(Object, T1)) (dg);
-        removeSlot(obj, dg);
-    }
-
-    void disconnect(string method, T2)(T2 obj) if(is(T2 : Object))
-    {
-        DelegateTypes t;
-        t.direct=mixin("&obj."~method);
-        t.direct.ptr=direct_ptr_flag;
-        removeSlot(obj, t);
-    }
-
-    /// Easy disconnect a whole object.
-    void disconnect(T2)(T2 obj) if(is(T2 : Object)) {
         assert(obj);
-        removeSlot(obj);
     }
+    body
+    {
+        impl_.addSlot(obj, cast(void delegate())mixin("&obj."~method));
+    }
+    /**
+      * Indirect connection to an object.
+      *
+      * Use this overload if you want to connect to an object method which does not match the signals signature.
+      * You can provide any delegate to do the parameter adaption, but make sure your delegates' context does not contain a reference
+      * to the target object, instead use the provided obj parameter, where the object passed to connect will be passed to your delegate.
+      * This is to make weak ref semantics possible, if your delegate contains a ref to obj, the object won't be freed as long as
+      * the connection remains.
+      *
+      * Preconditions: obj and dg must not be null (dg's context may).
+      *
+      * Params:
+      *     obj = The object to connect to. It will be passed to the delegate when the signal is emitted.
+      *     dg  = A wrapper delegate which takes care of calling some method of obj. It can do any kind of parameter adjustments necessary.
+     */
+    void connect(ClassType)(ClassType obj, void delegate(ClassType obj, Args) dg) if(is(ClassType == class))
+    in
+    {
+        assert(obj);
+        assert(dg);
+    }
+    body
+    {
+        impl_.addSlot(obj, cast(void delegate()) dg);
+    }
+
+    /**
+      * Connect with strong ref semantics.
+      *
+      * Use this overload if you either really really want strong ref semantics for some reason or because you want
+      * to connect some non-class method delegate. Whatever the delegates context references, will stay in memory
+      * as long as the signals connection is not removed and the signal gets not destroyed itself.
+      *
+      * Preconditions: dg must not be null. (Its context may.)
+      *
+      * Params:
+      *     dg = The delegate to be connected.
+      */
+    void strongConnect(void delegate(Args) dg)
+    in
+    {
+        assert(dg);
+    }
+    body
+    {
+        impl_.addSlot(null, cast(void delegate()) dg);
+    }
+
+
+    /**
+      * Disconnect a direct connection.
+      *
+      * After issuing this call method of obj won't be triggered any longer when emit is called.
+      * Preconditions: Same as for direct connect.
+      */
+    void disconnect(string method, ClassType)(ClassType obj) if(is(ClassType == class) && __traits(compiles, {void delegate(Args) dg=mixin("&obj."~method);}))
+    in
+    {
+        assert(obj);
+    }
+    body
+    {
+        impl_.removeSlot(obj, cast(void delegate()) mixin("&obj."~method));
+    }
+
+    /**
+      * Disconnect an indirect connection.
+      *
+      * For this to work properly, dg has to be exactly the same as the one passed to connect. So if you used a lamda
+      * you have to keep a reference to it somewhere, if you want to disconnect the connection later on.
+      * If you want to remove all connections to a particular object use the overload which only takes an object paramter.
+     */
+    void disconnect(ClassType)(ClassType obj, void delegate(ClassType, T1) dg) if(is(ClassType == class))
+    in
+    {
+        assert(obj);
+        assert(dg);
+    }
+    body
+    {
+        impl_.removeSlot(obj, cast(void delegate())dg);
+    }
+
+    /**
+      * Disconnect all connections to obj.
+      *
+      * All connections to obj made with calls to connect are removed. 
+     */
+    void disconnect(ClassType)(ClassType obj) if(is(ClassType == class)) 
+    in
+    {
+        assert(obj);
+    }
+    body
+    {
+        impl_.removeSlot(obj);
+    }
+    
+    /**
+      * Disconnect a connection made with strongConnect.
+      *
+      * Disconnects all connections to dg.
+      */
+    void strongDisconnect(void delegate(Args) dg)
+    in
+    {
+        assert(dg);
+    }
+    body
+    {
+        impl_.removeSlot(null, cast(void delegate()) dg);
+    }
+
 
     private:
     SignalImpl impl_;
@@ -225,12 +313,69 @@ struct Signal(T1...)
 
 private struct SignalImpl
 {
+    /**
+      * Ensure proper signal copying.
+      *
+      * This is needed in case a signal is used from a struct, where copying is more likely to happen than for a class.
+      */
+    this(this) 
+    {
+        debug (signal) writeln("In postblit! ", &this);
+        slots_=slots_.dup;
+        foreach(slot; slots_) 
+        {
+            auto o=slot.obj;
+            if(o)
+                rt_attachDisposeEvent(o, &unhook);
+                
+        }
+    }
+    /// Ensure proper copying.
+    ref SignalImpl opAssign(ref SignalImpl other) 
+    {
+        debug (signal) writeln("In opAssign! ", &this);
+        auto slots=slots_;
+        clear(this);
+        if(slots.length>=other.slots_.length) 
+        {
+            slots.length=other.slots_.length;
+            slots[]=other.slots_[];
+        }
+        else
+            slots=other.slots_.dup;
+        slots_=slots;
+        foreach(slot; slots_) 
+        {
+            auto o=slot.obj;
+            if(o)
+                rt_attachDisposeEvent(o, &unhook);
+                
+        }
+        return this;
+    }
+
+    /// Ensure proper copying.
+    ref SignalImpl opAssign(SignalImpl other) 
+    {
+        debug (signal) writeln("In opAssign temp! ", &this);
+        clear(this);
+        slots_=other.slots_;
+        foreach(slot; slots_) 
+        {
+            auto o=slot.obj;
+            if(o)
+                rt_attachDisposeEvent(o, &unhook);
+                
+        }
+        return this;
+    }
+
     void emit(Args...)( Args args )
     {
         if(!slots_.length) // Fast path for no slots.
             return;
         bool did_mark=false; // Ensure proper operation in case of nested emit calls.
-        if(slots_[$-1]!=SlotImpl.init) // Only mark if not already marked. (emit could be called from a slot or a fiber)
+        if(slots_[$-1] !is SlotImpl.init) // Only mark if not already marked. (emit could be called from a slot or a fiber)
         {
             slots_~=SlotImpl.init; // Put mark so other methods know that emit is in progress.
             did_mark=true;
@@ -244,13 +389,13 @@ private struct SignalImpl
             }
         }
 
-        doEmit(slots_[0..$-1], args);
+        doEmit(slots_[0 .. $-1], args);
     }
 
     void addSlot(Object obj, void delegate() dg)
     {
-        bool emit_in_progress = slots_.length && slots_[$-1]==SlotImpl.init;
-        auto new_slot = obj ? SlotImpl(obj, dg) : SlotImpl(dg);
+        bool emit_in_progress = slots_.length && slots_[$-1] is SlotImpl.init;
+        auto new_slot = SlotImpl(obj, dg);
         if(emit_in_progress)
         {
             slots_[$-1]=new_slot;
@@ -263,12 +408,12 @@ private struct SignalImpl
     }
     void removeSlot(Object obj, void delegate() dg)
     {
-        auto removal=obj ? SlotImpl(obj, dg) : SlotImpl(dg);
-        removeSlot((which) => removal is which);
+        auto removal=SlotImpl(obj, dg);
+        removeSlot((item) => removal is item);
     }
     void removeSlot(Object obj, bool detach=true) 
     {
-        removeSlot((which) => which.obj is obj);
+        removeSlot((item) => item.obj is obj);
     }
     /* **
      * Special function called when o is destroyed.
@@ -277,6 +422,7 @@ private struct SignalImpl
      */
     void unhook(Object o)
     {
+        debug (signal) writefln("Unhooked object %s, for signal %s", cast(void*)o, &this);
         removeSlot(o, false);
     }
 
@@ -284,6 +430,7 @@ private struct SignalImpl
     {
         foreach (slot; slots_)
         {
+            debug (signal) stderr.writeln("Destruction, removing some slot!, signal: ", &this);
             auto o=slot.obj;
             if (o)
             {   
@@ -292,7 +439,7 @@ private struct SignalImpl
         }
     }
     private: // Private is more of a documentation in an already private context. Stuff not meant to be used outside this struct:
-    void removeSlot(bool delegate(in ref SlotImpl) isRemoved, bool detach=true)
+    void removeSlot(bool delegate(SlotImpl) isRemoved, bool detach=true)
     {
         if(slots_.length && slots_[$-1] is SlotImpl.init)  // Emit in progress, copy necessary
             slots_=slots_[0..$-1].dup;
@@ -300,12 +447,12 @@ private struct SignalImpl
         {
             if (isRemoved(slots_[i]))
             {   
-                slots_[i]=slots_[slots_.length-1];
-                slots_.length=slots_.length-1;
-                slots_.assumeSafeAppend();
-                auto o=slots[i].obj;
+                auto o=slots_[i].obj;
                 if(o && detach)  
                     rt_detachDisposeEvent(o, &unhook);
+                slots_[i]=slots_[slots_.length-1]; // Erased don't use it from now on in this loop!
+                slots_.length=slots_.length-1;
+                slots_.assumeSafeAppend();
             }
             else
                 i++;
@@ -318,14 +465,8 @@ private struct SignalImpl
     {
         foreach (i, slot; slots)
         {   
-            try 
-            {
-                slot(args);
-            }
-            finally 
-            {
-                doEmit(slots[i+1 ..$], args); // Carry on.
-            }
+            scope (failure) doEmit(slots[i+1 .. $], args); // Carry on.
+            slot.opCall(args); // slot(args) did not compile for some reason with dmd 2.060.
         }
     }
 
@@ -336,19 +477,14 @@ private struct SignalImpl
 // Its is inherently unsafe. It is not a template so SignalImpl does not need to be one.
 private struct SlotImpl 
 {
+    // Pass null for o if you have a strong ref delegate.
     this(Object o, void delegate() dg) 
     {
         obj=o;
         dg_= dg;
-        if(dg_.ptr==o) 
+        if(o && dg_.ptr is cast(void*) o) 
             dg_.ptr=direct_ptr_flag;
 
-    }
-    // Use for strong ref slots:
-    this(void delegate() dg) 
-    {
-        obj=cast(Object)strong_ptr_flag;
-        dg_= dg;
     }
     @property Object obj() 
     {
@@ -360,19 +496,19 @@ private struct SlotImpl
     }
     void opCall(Args...)(Args args)
     {
-        assert(dg);
+        assert(dg_);
         Object o=obj;
-        void* o_addr=(cast(void*)(o);
-        if(dg.ptr==direct_ptr_flag || o_addr == strong_ptr_flag) 
+        void* o_addr=cast(void*)(o);
+        if(dg_.ptr is direct_ptr_flag || o_addr is strong_ptr_flag) 
         {
-            auto mdg=cast(void delegate(Args)) dg;
-            if(o_addr!=strong_ptr_flag)
+            auto mdg=cast(void delegate(Args)) dg_;
+            if(o_addr !is strong_ptr_flag)
                 mdg.ptr=cast(void*)obj;
             mdg(args);
         }
         else 
         {
-            auto mdg=cast(void delegate(Object, Args)) dg;
+            auto mdg=cast(void delegate(Object, Args)) dg_;
             mdg(obj, args);
         }
 
@@ -381,7 +517,7 @@ private struct SlotImpl
     void delegate() dg_;
     InvisibleRef obj_;
     enum direct_ptr_flag=cast(void*)(~0);
-    enum strong_ptr_flag=direct_ptr_flag;
+    enum strong_ptr_flag=null;
 }
 
 
@@ -412,7 +548,7 @@ private struct InvisibleRef
             obj_high_ = (tmp>>16)&0x0000ffff;
             obj_low_ = tmp&0x0000ffff;
         }
-        assert(obj==o);
+        assert(obj is o);
     }
     private:
     version(D_LP64) 
@@ -691,6 +827,95 @@ unittest {
     a.value4 = 44;
     a.value5 = 45;
     a.value6 = 46;
+}
+
+/// Test copying:
+unittest 
+{
+    import std.stdio;
+
+    struct Property 
+    {
+        alias value this;
+        Signal!(int) signal;
+        @property int value() 
+        {
+            return value_;
+        }
+        ref Property opAssign(int val) 
+        {
+            debug (signal) writeln("Assigning int to property with signal: ", &this);
+            value_=val;
+            signal.emit(val);
+            return this;
+        }
+        private: 
+        int value_;
+    }
+
+    void observe(int val)
+    {
+        writefln("observe: Wow! The value changed: %s", val);
+    }
+
+    class Observer 
+    {
+        void observe(int val)
+        {
+            writefln("Observer: Wow! The value changed: %s", val);
+            writefln("Really! I must know I am an observer (old value was: %s)!", observed);
+            observed=val;
+            count++;
+        }
+        int observed;
+        int count;
+    }
+    Property prop;
+    void delegate(int) dg=(val) => observe(val);
+    prop.signal.strongConnect(dg);
+    assert(prop.signal.impl_.slots_.length==1);
+    Observer o=new Observer;
+    prop.signal.connect!"observe"(o);
+    assert(prop.signal.impl_.slots_.length==2);
+    writeln("Triggering on orignal property with value 8 ...");
+    prop=8;
+    assert(o.count==1);
+    assert(o.observed==prop);
+    writeln("Doing copy ...");
+    auto prop2=prop;
+    assert(prop2.signal.impl_.slots_.length==2);
+    writefln("Triggering prop2 with 7 ...");
+    prop2=7;
+    assert(o.count==2);
+    assert(o.observed==prop2);
+    assert(prop==8);
+    prop=1;
+    assert(o.count==3);
+    assert(o.observed==prop);
+    assert(prop2==7);
+    writeln("Clearing prop with signal: ", &prop.signal);
+    clear(prop); 
+    assert(prop2.signal.impl_.slots_.length==2);
+    assert(prop.signal.impl_.slots_.length==0);
+    prop=3;
+    assert(o.count==3);
+    assert(o.observed==1); // Slot list was really independent.
+    writeln("Doing copy 2 ...");
+    prop.signal.impl_=prop2.signal.impl_;
+    writeln("prop.signal: ", &prop.signal);
+    prop=100;
+    assert(o.count==4);
+    assert(o.observed==prop);
+    prop2=prop; // Test codepath where signal already has equal sized contents.
+    prop2.signal.strongDisconnect(dg);
+    assert(prop2.signal.impl_.slots_.length==1);
+    assert(prop.signal.impl_.slots_.length==2);
+    prop2=10;
+    assert(o.count==5);
+    assert(o.observed==prop2);
+    destroy(o);
+    assert(prop2.signal.impl_.slots_.length==0);
+    assert(prop.signal.impl_.slots_.length==0);
 }
 
 version(none) // Disabled because of dmd @@@BUG5028@@@
