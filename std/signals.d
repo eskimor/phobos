@@ -314,61 +314,15 @@ struct Signal(Args...)
 private struct SignalImpl
 {
     /**
-      * Ensure proper signal copying.
+      * Forbit copying.
       *
-      * This is needed in case a signal is used from a struct, where copying is more likely to happen than for a class.
+      * As struct must be relocatable it is not even possible to provide proper copy support for signals.
+      * (rt_attachDisposeEvent is used for registering unhook. D's move semantics assume relocatable objects, which results
+      * in this(this) being called for one instance and the destructor for another, thus the wrong handlers are deregistered.)
       */
-    this(this) 
-    {
-        debug (signal) writeln("In postblit! ", &this);
-        slots_=slots_.dup;
-        foreach(slot; slots_) 
-        {
-            auto o=slot.obj;
-            if(o)
-                rt_attachDisposeEvent(o, &unhook);
-                
-        }
-    }
-    /// Ensure proper copying.
-    ref SignalImpl opAssign(ref SignalImpl other) 
-    {
-        debug (signal) writeln("In opAssign! ", &this);
-        auto slots=slots_;
-        clear(this);
-        if(slots.length>=other.slots_.length) 
-        {
-            slots.length=other.slots_.length;
-            slots[]=other.slots_[];
-        }
-        else
-            slots=other.slots_.dup;
-        slots_=slots;
-        foreach(slot; slots_) 
-        {
-            auto o=slot.obj;
-            if(o)
-                rt_attachDisposeEvent(o, &unhook);
-                
-        }
-        return this;
-    }
-
-    /// Ensure proper copying.
-    ref SignalImpl opAssign(SignalImpl other) 
-    {
-        debug (signal) writeln("In opAssign temp! ", &this);
-        clear(this);
-        slots_=other.slots_;
-        foreach(slot; slots_) 
-        {
-            auto o=slot.obj;
-            if(o)
-                rt_attachDisposeEvent(o, &unhook);
-                
-        }
-        return this;
-    }
+    @disable this(this);
+    /// Forbit copying, it does not work. See this(this).
+    @disable void opAssign(SignalImpl other);
 
     void emit(Args...)( Args args )
     {
@@ -881,41 +835,6 @@ unittest
     prop=8;
     assert(o.count==1);
     assert(o.observed==prop);
-    writeln("Doing copy ...");
-    auto prop2=prop;
-    assert(prop2.signal.impl_.slots_.length==2);
-    writefln("Triggering prop2 with 7 ...");
-    prop2=7;
-    assert(o.count==2);
-    assert(o.observed==prop2);
-    assert(prop==8);
-    prop=1;
-    assert(o.count==3);
-    assert(o.observed==prop);
-    assert(prop2==7);
-    writeln("Clearing prop with signal: ", &prop.signal);
-    clear(prop); 
-    assert(prop2.signal.impl_.slots_.length==2);
-    assert(prop.signal.impl_.slots_.length==0);
-    prop=3;
-    assert(o.count==3);
-    assert(o.observed==1); // Slot list was really independent.
-    writeln("Doing copy 2 ...");
-    prop.signal.impl_=prop2.signal.impl_;
-    writeln("prop.signal: ", &prop.signal);
-    prop=100;
-    assert(o.count==4);
-    assert(o.observed==prop);
-    prop2=prop; // Test codepath where signal already has equal sized contents.
-    prop2.signal.strongDisconnect(dg);
-    assert(prop2.signal.impl_.slots_.length==1);
-    assert(prop.signal.impl_.slots_.length==2);
-    prop2=10;
-    assert(o.count==5);
-    assert(o.observed==prop2);
-    destroy(o);
-    assert(prop2.signal.impl_.slots_.length==0);
-    assert(prop.signal.impl_.slots_.length==0);
 }
 
 version(none) // Disabled because of dmd @@@BUG5028@@@
