@@ -170,7 +170,7 @@ void main()
   */
 struct Signal(Args...)
 {
-    void emit( Args args )
+    private void emit( Args args )
     {
         impl_.emit(args);
     }
@@ -319,6 +319,10 @@ private struct SignalImpl
       * As struct must be relocatable it is not even possible to provide proper copy support for signals.
       * (rt_attachDisposeEvent is used for registering unhook. D's move semantics assume relocatable objects, which results
       * in this(this) being called for one instance and the destructor for another, thus the wrong handlers are deregistered.)
+      * Not even destructive copy semantics are really possible, if you want to be safe, because of the explicit move() call.
+      * So even if this(this) immediately drops the array and does not register unhook, D's assumption of relocatable objects is not
+      * matched, so move() for example will still simply swap contents of two structs resulting in the wrong unhook delegates
+      * being unregistered.
       */
     @disable this(this);
     /// Forbit copying, it does not work. See this(this).
@@ -384,7 +388,7 @@ private struct SignalImpl
     {
         foreach (slot; slots_)
         {
-            debug (signal) stderr.writeln("Destruction, removing some slot!, signal: ", &this);
+            debug (signal) stderr.writeln("Destruction, removing some slot, signal: ", &this);
             auto o=slot.obj;
             if (o)
             {   
