@@ -148,18 +148,18 @@ void main()
             The second one is more complex to implement, but seems to be the better solution. In fact it is not, because you basically serialize multiple fibers which can pretty much make them useless. In the first case, the slot has to handle the case when being called before an io operation is finished but this also means that it can do load balancing or whatever. With the queue implementation the access would just be serialized and the slot implementation could not do anything about it. So in fact the first implementation is also the expected one, even in the case of fibers.
   *	- DONE: Reduce memory usage by using a single array.
   *	- DONE: Ensure correctness on exceptions (chain them)
-  *	- Checkout why I should use ==class instead of : Object and do it if it improves things
-  * - Add strongConnect() method.
-  * - Block signal functionality?
+  *	- DONE (just did it): Checkout why I should use ==class instead of : Object and do it if it improves things
+  * - DONE: Add strongConnect() method.
+  * - CANCELED (keep it simple, functionality can be implemented in wrapper delegates if needed): Block signal functionality?
   *	- Think about const correctness
-  * - Implement postblit and op assign & write unittest for these.
+  * - DONE: Implement postblit and op assign & write unittest for these.
   * - Document not to rely on order in which the slots are called.
   *	- Mark it as trusted
   *	- Write unit tests
   * - DONE: Factor out template agnostic code to non templated code. (Use casts) 
   *     -> Avoids template bloat
   *     -> We can drop linkin()
-  * - Provide a mixin wrapper, so only the containing object can emit a signal, with no additional work needed.
+  * - DONE: Provide a mixin wrapper, so only the containing object can emit a signal, with no additional work needed.
   *	- Rename it to std.signals2
   *	- Update documentation
   *	- Fix coding style to style guidlines of phobos.
@@ -168,12 +168,67 @@ void main()
         - Performance wise: Optimize for very small empty signal, it should be no more than pointer+length. connect/disconnect is optimized to be fast in the case that emit is not currently running. Memory allocation is only done if active.
   *	- Get it into review for phobos :-)
   */
-struct Signal(Args...)
+/**
+  * Convenience wrapper mixin.
+  * It allows you to do someobject.signal.connect() without allowing you to call emit, which only the containing object can.
+  * It offers access to the underlying signal object via full (only for the containing object) or restricted for public access.
+  */
+mixin template Signal(Args...)
 {
-    private void emit( Args args )
+    private final void emit( Args args )
     {
-        impl_.emit(args);
+        full.emit(args);
     }
+    final void connect(string method, ClassType)(ClassType obj) if(is(ClassType == class) && __traits(compiles, {void delegate(Args) dg=mixin("&obj."~method);}))
+    {
+        full.connect!method(obj);
+    }
+    final void connect(ClassType)(ClassType obj, void delegate(ClassType obj, Args) dg) if(is(ClassType == class))
+    {
+        full.connect(obj, dg);
+    }
+    final void strongConnect(void delegate(Args) dg)
+    {
+        full.strongConnect(dg);
+    }
+    final void disconnect(string method, ClassType)(ClassType obj) if(is(ClassType == class) && __traits(compiles, {void delegate(Args) dg=mixin("&obj."~method);}))
+    {
+        full.disconnect!method(obj);
+    }
+    final void disconnect(ClassType)(ClassType obj, void delegate(ClassType, T1) dg) if(is(ClassType == class))
+    {
+        full.disconnect(obj, dg);
+    }
+    final void strongDisconnect(void delegate(Args) dg)
+    {
+        full.strongDisconnect(dg);
+    }
+    final ref RestrictedSignal!(Args) restricted() @property
+    {
+        return full.restricted;
+    }
+    private FullSignal!(Args) full;
+}
+
+struct FullSignal(Args...)
+{
+    alias restricted this;
+
+    void emit( Args args )
+    {
+        restricted_.impl_.emit(args);
+    }
+
+    ref RestrictedSignal!(Args) restricted() @property
+    {
+        return restricted_;
+    }
+
+    private:
+    RestrictedSignal!(Args) restricted_;
+}
+struct RestrictedSignal(Args...)
+{
     /**
       * Direct connection to an object.
       *
@@ -305,8 +360,6 @@ struct Signal(Args...)
     {
         impl_.removeSlot(null, cast(void delegate()) dg);
     }
-
-
     private:
     SignalImpl impl_;
 }
@@ -513,7 +566,7 @@ private struct InvisibleRef
     private:
     version(D_LP64) 
     {
-        void* obj_=cast(void*)~cast(ptrdiff_t)(null);
+        void* obj_=cast(void*)~cast(ptrdiff_t)(0);
     }
     else 
     {
@@ -559,7 +612,7 @@ unittest
             return v;
         }
 
-        Signal!(string, int) extendedSig;
+        mixin Signal!(string, int) extendedSig;
         //Signal!(int) simpleSig;
 
         private:
@@ -637,9 +690,9 @@ unittest {
         @property void value2(int v)  { s2.emit("str2", v); }
         @property void value3(long v) { s3.emit("str3", v); }
 
-        Signal!(string, int)  s1;
-        Signal!(string, int)  s2;
-        Signal!(string, long) s3;
+        mixin Signal!(string, int)  s1;
+        mixin Signal!(string, int)  s2;
+        mixin Signal!(string, long) s3;
     }
 
     void test(T)(T a) {
@@ -715,9 +768,9 @@ unittest {
         @property void value5(int v)  { s5.emit("str5", v); }
         @property void value6(long v) { s6.emit("str6", v); }
 
-        Signal!(string, int)  s4;
-        Signal!(string, int)  s5;
-        Signal!(string, long) s6;
+        mixin Signal!(string, int)  s4;
+        mixin Signal!(string, int)  s5;
+        mixin Signal!(string, long) s6;
     }
 
     auto a = new BarDerived;
@@ -797,7 +850,7 @@ unittest
     struct Property 
     {
         alias value this;
-        Signal!(int) signal;
+        mixin Signal!(int) signal;
         @property int value() 
         {
             return value_;
