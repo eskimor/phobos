@@ -474,10 +474,12 @@ private struct SignalImpl
     // All exceptions that occur will be chained.
     void doEmit(Args...)( SlotImpl[] slots, Args args )
     {
-        foreach (i, slot; slots)
-        {   
-            scope (failure) doEmit(slots[i+1 .. $], args); // Carry on.
-            slot.opCall(args); // slot(args) did not compile for some reason with dmd 2.060.
+        int i=0;
+        immutable length=slots.length;
+        scope (exit) if(i<length-1) doEmit(slots[i+1 .. $], args); // Carry on.
+        for(; i<length; i++)
+        {
+            slots[i].opCall(args); // slots[i](args) did not compile for some reason with dmd 2.060.
         }
     }
 
@@ -866,15 +868,15 @@ unittest
 
     void observe(int val)
     {
-        writefln("observe: Wow! The value changed: %s", val);
+        debug (signal) writefln("observe: Wow! The value changed: %s", val);
     }
 
     class Observer 
     {
         void observe(int val)
         {
-            writefln("Observer: Wow! The value changed: %s", val);
-            writefln("Really! I must know I am an observer (old value was: %s)!", observed);
+            debug (signal) writefln("Observer: Wow! The value changed: %s", val);
+            debug (signal) writefln("Really! I must know I am an observer (old value was: %s)!", observed);
             observed=val;
             count++;
         }
@@ -888,12 +890,37 @@ unittest
     Observer o=new Observer;
     prop.signal.connect!"observe"(o);
     assert(prop.signal.impl_.slots_.length==2);
-    writeln("Triggering on orignal property with value 8 ...");
+    debug (signal) writeln("Triggering on orignal property with value 8 ...");
     prop=8;
     assert(o.count==1);
     assert(o.observed==prop);
 }
-
+unittest 
+{
+    import std.conv;
+    Signal!() s1;
+    void testfunc(int id) 
+    {
+        throw new Exception(to!string(id));
+    }
+    s1.strongConnect(() => testfunc(0));
+    s1.strongConnect(() => testfunc(1));
+    s1.strongConnect(() => testfunc(2));
+    try {
+        s1.emit();
+    }
+    catch(Exception e) {
+        Throwable t=e;
+        int i=0;
+        while(t) {
+            debug (signal) stderr.writefln("Error found: %s", t);
+            assert(to!int(t.msg)==i);
+            t=t.next;
+            i++;
+        }
+        assert(i==3);
+    }
+}
 version(none) // Disabled because of dmd @@@BUG5028@@@
 unittest
 {
