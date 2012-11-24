@@ -898,7 +898,7 @@ unittest
 unittest 
 {
     import std.conv;
-    Signal!() s1;
+    FullSignal!() s1;
     void testfunc(int id) 
     {
         throw new Exception(to!string(id));
