@@ -257,7 +257,7 @@ struct RestrictedSignal(Args...)
       * This is to make weak ref semantics possible, if your delegate contains a ref to obj, the object won't be freed as long as
       * the connection remains.
       *
-      * Preconditions: obj and dg must not be null (dg's context may).
+      * Preconditions: obj and dg must not be null (dg's context may). dg's context must not be equal to obj.
       *
       * Params:
       *     obj = The object to connect to. It will be passed to the delegate when the signal is emitted.
@@ -268,6 +268,7 @@ struct RestrictedSignal(Args...)
     {
         assert(obj);
         assert(dg);
+        assert(cast(void*)obj != dg.ptr);
     }
     body
     {
