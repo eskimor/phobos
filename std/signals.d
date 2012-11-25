@@ -453,12 +453,13 @@ private struct SignalImpl
     private: // Private is more of a documentation in an already private context. Stuff not meant to be used outside this struct:
     void removeSlot(bool delegate(SlotImpl) isRemoved, bool detach=true)
     {
-        if(slots_.length && slots_[$-1] is SlotImpl.init)  // Emit in progress, copy necessary
-            slots_=slots_[0..$-1].dup;
         for(int i=0; i<slots_.length; )
         {
             if (isRemoved(slots_[i]))
             {   
+                if(slots_[$-1] is SlotImpl.init) // Emit in progress, copy necessary
+                    slots_=slots_[0..$-1].dup;
+                assert(i<slots_.length); 
                 auto o=slots_[i].obj;
                 if(o && detach)  
                     rt_detachDisposeEvent(o, &unhook);
