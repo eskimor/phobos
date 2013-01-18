@@ -199,6 +199,10 @@ mixin template Signal(Args...)
     {
         full.disconnect(obj, dg);
     }
+    final void disconnect(ClassType)(ClassType obj) if(is(ClassType == class))  
+    {
+        full.disconnect(obj);
+    }
     final void strongDisconnect(void delegate(Args) dg)
     {
         full.strongDisconnect(dg);
