@@ -181,11 +181,11 @@ mixin template Signal(Args...)
     }
     final void connect(string method, ClassType)(ClassType obj) if(is(ClassType == class) && __traits(compiles, {void delegate(Args) dg=mixin("&obj."~method);}))
     {
-        full.connect!method(obj);
+        full.connect!(method, ClassType)(obj);
     }
     final void connect(ClassType)(ClassType obj, void delegate(ClassType obj, Args) dg) if(is(ClassType == class))
     {
-        full.connect(obj, dg);
+        full.connect!ClassType(obj, dg);
     }
     final void strongConnect(void delegate(Args) dg)
     {
@@ -193,11 +193,15 @@ mixin template Signal(Args...)
     }
     final void disconnect(string method, ClassType)(ClassType obj) if(is(ClassType == class) && __traits(compiles, {void delegate(Args) dg=mixin("&obj."~method);}))
     {
-        full.disconnect!method(obj);
+        full.disconnect!(method, ClassType)(obj);
     }
     final void disconnect(ClassType)(ClassType obj, void delegate(ClassType, T1) dg) if(is(ClassType == class))
     {
-        full.disconnect(obj, dg);
+        full.disconnect!(ClassType)(obj, dg);
+    }
+    final void disconnect(ClassType)(ClassType obj) if(is(ClassType == class)) 
+    {
+        full.disconnect!ClassType(obj);
     }
     final void strongDisconnect(void delegate(Args) dg)
     {
@@ -888,10 +892,10 @@ unittest
     Property prop;
     void delegate(int) dg=(val) => observe(val);
     prop.signal.strongConnect(dg);
-    assert(prop.signal.impl_.slots_.length==1);
+    assert(prop.signal.full.impl_.slots_.length==1);
     Observer o=new Observer;
     prop.signal.connect!"observe"(o);
-    assert(prop.signal.impl_.slots_.length==2);
+    assert(prop.signal.full.impl_.slots_.length==2);
     debug (signal) writeln("Triggering on orignal property with value 8 ...");
     prop=8;
     assert(o.count==1);
