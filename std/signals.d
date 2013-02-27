@@ -315,7 +315,8 @@ struct RestrictedSignal(Args...)
     }
     body
     {
-        impl_.removeSlot(obj, cast(void delegate()) mixin("&obj."~method));
+        void delegate(Args) dg=mixin("&obj."~method);
+        impl_.removeSlot(obj, cast(void delegate()) dg);
     }
 
     /**
