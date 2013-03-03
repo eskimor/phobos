@@ -393,37 +393,43 @@ private struct SignalImpl
 
     void emit(Args...)( Args args )
     {
-        if(!slots_.length) // Fast path for no slots.
+        auto slots=slots_; // copy, so removeSlot won't set it to null, after we checked it is not.
+        if(!slots)
             return;
-        bool did_mark=false; // Ensure proper operation in case of nested emit calls.
-        if(slots_[$-1] !is SlotImpl.init) // Only mark if not already marked. (emit could be called from a slot or a fiber)
-        {
-            slots_~=SlotImpl.init; // Put mark so other methods know that emit is in progress.
-            did_mark=true;
-        }
-        scope (exit) 
-        {
-            if(did_mark && slots_.length && slots_[$-1] is SlotImpl.init) // If nothing happened, undo mark.
-            {
-                slots_.length=slots_.length-1;
-                slots_.assumeSafeAppend();
-            }
-        }
-
-        doEmit(slots_[0 .. $-1], args);
+        doEmit(slots[], null, args);
     }
 
     void addSlot(Object obj, void delegate() dg)
     {
-        bool emit_in_progress = slots_.length && slots_[$-1] is SlotImpl.init;
-        auto new_slot = SlotImpl(obj, dg);
-        if(emit_in_progress)
+        SlotImpl* new_slot=null;
+        SlotImpl* old_tail;
+        auto slots=slots_; // So we can handle slots_ getting null concurrently.
+        do 
         {
-            slots_[$-1]=new_slot;
-            slots_~=SlotImpl.init;
+            if(!slots)  
+            {
+                slots=new SlotList(SlotImpl(obj, dg));
+                break;
+            }
+            if(!new_slot)
+                new_slot=new SlotImpl(obj, dg);
+            old_tail=slots.tail;
+            assert(old_tail);
+            old_tail.next=new_slot;
         }
-        else 
-            slots_~=new_slot;
+        while(!cas(slots.tail, old_tail, new_slot);
+
+        if(!slots_)  // Handle case that slots_ was set to null while we were operating on slots.
+        {
+            if(slots.tail!=&slots.head) // Everything got deleted, so keep it that way.
+            {
+                slots.head=*slots.tail;
+                slots.tail=&slots.head;
+            }
+            slots_=slots;
+        }
+        assert(slots_ is slots); // Must be the same, regardless of what happened.
+
         if(obj) 
             rt_attachDisposeEvent(obj, &unhook);
     }
@@ -449,7 +455,7 @@ private struct SignalImpl
 
     ~this()
     {
-        foreach (slot; slots_)
+        foreach (slot; (*slots_)[])
         {
             debug (signal) stderr.writeln("Destruction, removing some slot, signal: ", &this);
             auto o=slot.obj;
@@ -462,39 +468,97 @@ private struct SignalImpl
     private: // Private is more of a documentation in an already private context. Stuff not meant to be used outside this struct:
     void removeSlot(bool delegate(SlotImpl) isRemoved, bool detach=true)
     {
-        for(int i=0; i<slots_.length; )
+        if(!slots_)
+            return;
+        SlotImpl* prev=null;
+        foreach(slot; (*slots_)[]) 
         {
-            if (isRemoved(slots_[i]))
-            {   
-                if(slots_[$-1] is SlotImpl.init) // Emit in progress, copy necessary
-                    slots_=slots_[0..$-1].dup;
-                assert(i<slots_.length); 
-                auto o=slots_[i].obj;
+            if(isRemoved(*slot)) 
+            {
+                auto o=slot.obj;
+                slot.makeInvalid();
                 if(o && detach)  
                     rt_detachDisposeEvent(o, &unhook);
-                slots_[i]=slots_[slots_.length-1]; // Erased don't use it from now on in this loop!
-                slots_.length=slots_.length-1;
-                slots_.assumeSafeAppend();
+
+                if(prev) 
+                {
+                    prev.next=slot.next;
+                    if(slots_.tail==slot)  // Don't check for slot.next!=null ! (Important if concurrent to addSlot())
+                        slots_.tail=prev;
+                }
+                else 
+                {
+                    if(slot.next) 
+                    {
+                        slots_.head=*(slot.next);
+                        if(slots_.tail==slot)
+                            slots_.tail=&slots_.head;
+                    }
+                    else
+                        slots_=null;
+                }
+                prev=slot.next;
             }
-            else
-                i++;
+            else 
+                prev=slot;
         }
     }
 
     // Helper method to allow all slots being called even in case on an exception. 
     // All exceptions that occur will be chained.
-    void doEmit(Args...)( SlotImpl[] slots, Args args )
+    void doEmit(Args...)( SlotList.Range slots, SlotImpl* previous, Args args )
     {
-        int i=0;
-        immutable length=slots.length;
-        scope (exit) if(i<length-1) doEmit(slots[i+1 .. $], args); // Carry on.
-        for(; i<length; i++)
+        scope (exit) 
         {
-            slots[i].opCall(args); // slots[i](args) did not compile for some reason with dmd 2.060.
+            if(slots.empty) 
+                return;
+            previous=slots.front; 
+            slots.popFront(); 
+            doEmit(slots, previous, args); // Carry on.
+        }
+        for(; !slots.empty; slots.popFront())  // Explicit loop to avoid copy of range. (We need it to be advanced in scope(exit) )
+        {
+            Object o;
+            do {
+                o=slots.front.obj; // From now on the current slot won't get deleted by GC.
+            }
+            while(slots.front.obj!=o); // Can happen if front is slots_.head.
+
+            if(slots.front.isValid) // If it is valid now, then it stays valid, we hold a reference!
+            {
+                (slots.front)(o, args);
+            }
+            previous=slots.front;
         }
     }
 
-    SlotImpl[] slots_;
+    SlotList* slots_;
+}
+
+private struct SlotList {
+    SlotImpl head;
+    SlotImpl* tail=&head;
+
+    invariant {
+        assert(tail);
+    }
+
+    static struct Range {
+        SlotImpl* front() @property {
+            return current_;
+        }
+        void popFront() {
+            assert(current_);
+            current_=current_.next;
+        }
+        bool empty() @property {
+            return current_==null || current_.next==null;
+        }
+        private SlotImpl* current_=null;
+    }
+    Range opSlice() {
+        return Range(&head);
+    }
 }
 
 // Simple convenience struct for signal implementation.
@@ -518,28 +582,39 @@ private struct SlotImpl
     {
         obj_.obj=o;
     }
-    void opCall(Args...)(Args args)
+
+    // For detecting that a slot got deleted.
+    bool isValid() @property {
+        return dg_.funcptr;
+    }
+
+    void makeInvalid() {
+        dg_.funcptr=null;
+    }
+    /// Takes o explicitely, because caller has to hold a strong ref to the object before calling this function is safe.
+    void opCall(Args...)(Object o, Args args) 
     {
         assert(dg_);
-        Object o=obj;
         void* o_addr=cast(void*)(o);
         if(dg_.ptr is direct_ptr_flag || o_addr is strong_ptr_flag) 
         {
             auto mdg=cast(void delegate(Args)) dg_;
             if(o_addr !is strong_ptr_flag)
-                mdg.ptr=cast(void*)obj;
+                mdg.ptr=cast(void*)o;
             mdg(args);
         }
         else 
         {
             auto mdg=cast(void delegate(Object, Args)) dg_;
-            mdg(obj, args);
+            mdg(o, args);
         }
 
     }
+    SlotImpl* next;
     private:
     void delegate() dg_;
     InvisibleRef obj_;
+
     enum direct_ptr_flag=cast(void*)(~0);
     enum strong_ptr_flag=null;
 }
