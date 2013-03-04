@@ -455,6 +455,8 @@ private struct SignalImpl
 
     ~this()
     {
+        if(!slots_)
+            return;
         foreach (slot; (*slots_)[])
         {
             debug (signal) stderr.writeln("Destruction, removing some slot, signal: ", &this);
@@ -468,40 +470,67 @@ private struct SignalImpl
     private: // Private is more of a documentation in an already private context. Stuff not meant to be used outside this struct:
     void removeSlot(bool delegate(SlotImpl) isRemoved, bool detach=true)
     {
+        auto slots=slots_; // Private copy, so it does not get suddenly set to null.
         if(!slots_)
             return;
         SlotImpl* prev=null;
-        foreach(slot; (*slots_)[]) 
+        bool done;
+        do 
         {
-            if(isRemoved(*slot)) 
+            done=true;
+            foreach(slot; (*slots)[]) 
             {
-                auto o=slot.obj;
-                slot.makeInvalid();
-                if(o && detach)  
-                    rt_detachDisposeEvent(o, &unhook);
-
-                if(prev) 
+                if(isRemoved(*slot)) 
                 {
-                    prev.next=slot.next;
-                    if(slots_.tail==slot)  // Don't check for slot.next!=null ! (Important if concurrent to addSlot())
-                        slots_.tail=prev;
+                    auto o=slot.obj;
+                    if(!slots_)
+                        return;  // GC was faster.
+                    if(slot.isValid) { // GC won't remove it itself now, because we are holding a reference to the object.
+                        SlotImpl* next=slot.next;
+                        Object keepInMem;
+                        do 
+                        {
+                            while(next && !next.isValid)
+                                next=next.next;
+                            if(!next) 
+                                break;
+                            keepInMem=next.obj;
+                        }
+                        while(!next.isValid);
+
+                        if(prev) 
+                        {
+                            auto keepPreviousInMem=prev.obj;
+                            if(!prev.isValid) // Removal not possible, prev got already removed by GC, try again. (If this condition is ever true when the GC is calling this function, we would have an andless loop -> Make sure this can not happen!)
+                                // It can not, because prev.next was set to next before slot.makeInvalid() gets called also as we keep a reference to the next slots object, it can not be collected until we are done.
+                            {
+                                done=false;
+                                break;
+                            }
+                            prev.next=next;
+                            cas(slots.tail, slot, prev);  // Don't check for slot.next!=null instead! (Important if concurrent to addSlot())
+                            slot.makeInvalid();
+                        }
+                        else 
+                        {
+                            if(next)
+                            {
+                                slots.head=*(next);
+                                if(slots.tail==next)
+                                    slots.tail=&slots.head;
+                            }
+                            else 
+                                slots_=null;
+                        }
+                        if(o && detach)  
+                            rt_detachDisposeEvent(o, &unhook);
+                    }
                 }
                 else 
-                {
-                    if(slot.next) 
-                    {
-                        slots_.head=*(slot.next);
-                        if(slots_.tail==slot)
-                            slots_.tail=&slots_.head;
-                    }
-                    else
-                        slots_=null;
-                }
-                prev=slot.next;
+                    prev=slot;
             }
-            else 
-                prev=slot;
         }
+        while(!done);
     }
 
     // Helper method to allow all slots being called even in case on an exception. 
