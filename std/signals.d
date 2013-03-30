@@ -64,6 +64,7 @@ module std.signals;
 import std.stdio;
 import std.c.stdlib : calloc, realloc, free;
 import core.exception : onOutOfMemoryError;
+import core.atomic;
 
 // Special function for internal use only.
 // Use of this is where the slot had better be a delegate
@@ -371,10 +372,10 @@ struct RestrictedSignal(Args...)
         impl_.removeSlot(null, cast(void delegate()) dg);
     }
     private:
-    SignalImpl impl_;
+    shared SignalImpl impl_;
 }
 
-private struct SignalImpl
+private shared struct SignalImpl
 {
     /**
       * Forbit copying.
@@ -396,28 +397,28 @@ private struct SignalImpl
         auto slots=slots_; // copy, so removeSlot won't set it to null, after we checked it is not.
         if(!slots)
             return;
-        doEmit(slots[], null, args);
+        doEmit((*slots)[], null, args);
     }
 
     void addSlot(Object obj, void delegate() dg)
     {
         SlotImpl* new_slot=null;
-        SlotImpl* old_tail;
+        shared SlotImpl* old_tail;
         auto slots=slots_; // So we can handle slots_ getting null concurrently.
         do 
         {
             if(!slots)  
             {
-                slots=new SlotList(SlotImpl(obj, dg));
+                slots=cast(shared)new SlotList(cast(shared)SlotImpl(obj, dg));
                 break;
             }
             if(!new_slot)
                 new_slot=new SlotImpl(obj, dg);
             old_tail=slots.tail;
             assert(old_tail);
-            old_tail.next=new_slot;
+            old_tail.next=cast(shared)new_slot;
         }
-        while(!cas(slots.tail, old_tail, new_slot);
+        while(!cas(&slots.tail, old_tail, cast(shared)new_slot));
 
         if(!slots_)  // Handle case that slots_ was set to null while we were operating on slots.
         {
@@ -431,7 +432,7 @@ private struct SignalImpl
         assert(slots_ is slots); // Must be the same, regardless of what happened.
 
         if(obj) 
-            rt_attachDisposeEvent(obj, &unhook);
+            rt_attachDisposeEvent(cast(Object)obj, cast(void delegate(Object o)) &unhook);
     }
     void removeSlot(Object obj, void delegate() dg)
     {
@@ -460,10 +461,11 @@ private struct SignalImpl
         foreach (slot; (*slots_)[])
         {
             debug (signal) stderr.writeln("Destruction, removing some slot, signal: ", &this);
-            auto o=slot.obj;
-            if (o)
+            auto nslot=cast(SlotImpl*)slot;
+            Object o=nslot.obj;
+            if (nslot.isValid && o)
             {   
-                rt_detachDisposeEvent(o, &unhook); // Avoid dangling references.
+                rt_detachDisposeEvent(o, cast(void delegate(Object o)) &unhook); // Avoid dangling references.
             }
         }
     }
@@ -480,100 +482,106 @@ private struct SignalImpl
             done=true;
             foreach(slot; (*slots)[]) 
             {
-                if(isRemoved(*slot)) 
+                auto nslot=cast(SlotImpl*)slot;
+                auto o=nslot.obj; // Won't get deleted now.
+                if(!nslot.isValid) // Oops too late ...
+                    continue;
+                if(isRemoved(*nslot)) 
                 {
-                    auto o=slot.obj;
                     if(!slots_)
                         return;  // GC was faster.
-                    if(slot.isValid) { // GC won't remove it itself now, because we are holding a reference to the object.
-                        SlotImpl* next=slot.next;
-                        Object keepInMem;
-                        do 
-                        {
-                            while(next && !next.isValid)
-                                next=next.next;
-                            if(!next) 
-                                break;
-                            keepInMem=next.obj;
-                        }
-                        while(!next.isValid);
+                    SlotImpl* next=nslot.next;
+                    Object keepInMem;
+                    do 
+                    {
+                        while(next && !next.isValid)
+                            next=next.next;
+                        if(!next) 
+                            break;
+                        keepInMem=next.obj;
+                    }
+                    while(!next.isValid);
 
-                        if(prev) 
+                    if(prev) 
+                    {
+                        auto keepPreviousInMem=prev.obj;
+                        if(!prev.isValid) // Removal not possible, prev got already removed by GC, try again. (If this condition is ever true when the GC is calling this function, we would have an andless loop -> Make sure this can not happen!)
+                            // It can not, because prev.next was set to next before slot.makeInvalid() gets called also as we keep a reference to the next slots object, it can not be collected until we are done.
                         {
-                            auto keepPreviousInMem=prev.obj;
-                            if(!prev.isValid) // Removal not possible, prev got already removed by GC, try again. (If this condition is ever true when the GC is calling this function, we would have an andless loop -> Make sure this can not happen!)
-                                // It can not, because prev.next was set to next before slot.makeInvalid() gets called also as we keep a reference to the next slots object, it can not be collected until we are done.
-                            {
-                                done=false;
-                                break;
-                            }
-                            prev.next=next;
-                            cas(slots.tail, slot, prev);  // Don't check for slot.next!=null instead! (Important if concurrent to addSlot())
-                            slot.makeInvalid();
+                            done=false;
+                            break;
+                        }
+                        prev.next=next;
+                        cas(&slots.tail, slot, cast(shared)prev);  // Don't check for slot.next!=null instead! (Important if concurrent to addSlot())
+                        nslot.makeInvalid();
+                    }
+                    else 
+                    {
+                        if(next)
+                        {
+                            auto snext=cast(shared) next;
+                            next=null;
+                            slots.head=*snext;
+                            if(slots.tail==snext)
+                                slots.tail=&slots.head;
                         }
                         else 
-                        {
-                            if(next)
-                            {
-                                slots.head=*(next);
-                                if(slots.tail==next)
-                                    slots.tail=&slots.head;
-                            }
-                            else 
-                                slots_=null;
-                        }
-                        if(o && detach)  
-                            rt_detachDisposeEvent(o, &unhook);
+                            slots_=null;
                     }
+                    if(o && detach)  
+                        rt_detachDisposeEvent(o, cast(void delegate(Object))&unhook);
                 }
                 else 
-                    prev=slot;
+                    prev=nslot;
             }
         }
         while(!done);
     }
 
-    // Helper method to allow all slots being called even in case on an exception. 
+    // Helper method to allow all slots being called even in case of an exception. 
     // All exceptions that occur will be chained.
-    void doEmit(Args...)( SlotList.Range slots, SlotImpl* previous, Args args )
+    void doEmit(Args...)( shared SlotList.Range slots, shared SlotImpl* previous, Args args )
     {
         scope (exit) 
         {
-            if(slots.empty) 
-                return;
-            previous=slots.front; 
-            slots.popFront(); 
-            doEmit(slots, previous, args); // Carry on.
+            if(!slots.empty)  
+            {
+                previous=slots.front; 
+                slots.popFront(); 
+                doEmit(slots, previous, args); // Carry on.
+            }
         }
         for(; !slots.empty; slots.popFront())  // Explicit loop to avoid copy of range. (We need it to be advanced in scope(exit) )
         {
             Object o;
+            auto nfront=cast(SlotImpl*)slots.front;
             do {
-                o=slots.front.obj; // From now on the current slot won't get deleted by GC.
+                o=nfront.obj; // From now on the current slot won't get deleted by GC.
             }
-            while(slots.front.obj!=o); // Can happen if front is slots_.head.
+            while(nfront.obj!=o); // Can happen if front is slots_.head.
 
-            if(slots.front.isValid) // If it is valid now, then it stays valid, we hold a reference!
+            if(nfront.isValid) // If it is valid now, then it stays valid, we hold a reference!
             {
-                (slots.front)(o, args);
+                (*nfront)(o, args);
             }
             previous=slots.front;
         }
     }
 
-    SlotList* slots_;
+    shared SlotList* slots_;
 }
 
-private struct SlotList {
-    SlotImpl head;
-    SlotImpl* tail=&head;
+private shared struct SlotList {
+    shared SlotImpl head;
+    shared SlotImpl* tail;
 
-    invariant {
-        assert(tail);
+    this(shared SlotImpl myHead) {
+        head=myHead;
+        tail=&head;
     }
 
-    static struct Range {
-        SlotImpl* front() @property {
+    static shared struct Range {
+        shared(SlotImpl*) front() @property {
             return current_;
         }
         void popFront() {
@@ -583,9 +591,9 @@ private struct SlotList {
         bool empty() @property {
             return current_==null || current_.next==null;
         }
-        private SlotImpl* current_=null;
+        private shared SlotImpl* current_=null;
     }
-    Range opSlice() {
+    shared(Range) opSlice() {
         return Range(&head);
     }
 }
@@ -614,7 +622,7 @@ private struct SlotImpl
 
     // For detecting that a slot got deleted.
     bool isValid() @property {
-        return dg_.funcptr;
+        return dg_.funcptr!=null;
     }
 
     void makeInvalid() {
@@ -661,7 +669,7 @@ private struct InvisibleRef
         version (D_LP64) 
             auto tmp=cast(void*)(~cast(ptrdiff_t)obj_); //Invert pointer.
         else 
-            auto tmp = cast(void*)(obj_high_<<16 | obj_low_);
+            auto tmp = cast(void*)(obj_high_<<16 | (obj_low_ & 0x0000ffff));
         return cast(Object)(tmp);
     }
     @property void obj(Object o) 
@@ -673,8 +681,8 @@ private struct InvisibleRef
         }
         else {
             auto tmp = cast(ptrdiff_t) cast(void*) o;
-            obj_high_ = (tmp>>16)&0x0000ffff;
-            obj_low_ = tmp&0x0000ffff;
+            obj_high_ = (tmp>>16)&0x0000ffff | 0xffff0000; // Address relies in kernel space
+            obj_low_ = tmp&0x0000ffff | 0xffff0000;
         }
         assert(obj is o);
     }
